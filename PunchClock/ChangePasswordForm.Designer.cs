@@ -31,6 +31,8 @@
             this.components = new System.ComponentModel.Container();
             this.lblStaff = new System.Windows.Forms.Label();
             this.cboEmployees = new System.Windows.Forms.ComboBox();
+            this.employeeBindingSource = new System.Windows.Forms.BindingSource(this.components);
+            this.PunchClockDataSet = new PunchClock.PunchClockDataSet1();
             this.txtNewPinCode = new System.Windows.Forms.TextBox();
             this.lblOldPinCode = new System.Windows.Forms.Label();
             this.txtVerifyNewPinCode = new System.Windows.Forms.TextBox();
@@ -40,11 +42,16 @@
             this.btnCancel = new System.Windows.Forms.Button();
             this.btnUpdateStaffPassword = new System.Windows.Forms.Button();
             this.lblChangePinCode = new System.Windows.Forms.Label();
-            this.PunchClockDataSet = new PunchClock.PunchClockDataSet1();
-            this.employeeBindingSource = new System.Windows.Forms.BindingSource(this.components);
             this.employeeTableAdapter = new PunchClock.PunchClockDataSet1TableAdapters.EmployeeTableAdapter();
-            ((System.ComponentModel.ISupportInitialize)(this.PunchClockDataSet)).BeginInit();
+            this.employeeShiftBindingSource = new System.Windows.Forms.BindingSource(this.components);
+            this.shiftTableAdapter = new PunchClock.PunchClockDataSet1TableAdapters.ShiftTableAdapter();
+            this.punchClockDataSetBindingSource = new System.Windows.Forms.BindingSource(this.components);
+            this.employeeBindingSource1 = new System.Windows.Forms.BindingSource(this.components);
             ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.PunchClockDataSet)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.employeeShiftBindingSource)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.punchClockDataSetBindingSource)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource1)).BeginInit();
             this.SuspendLayout();
             // 
             // lblStaff
@@ -60,8 +67,8 @@
             // 
             // cboEmployees
             // 
-            this.cboEmployees.DataSource = this.employeeBindingSource;
-            this.cboEmployees.DisplayMember = "FirstName";
+            this.cboEmployees.DataSource = this.employeeBindingSource1;
+            this.cboEmployees.DisplayMember = "FullName";
             this.cboEmployees.Font = new System.Drawing.Font("Microsoft Sans Serif", 12F);
             this.cboEmployees.FormattingEnabled = true;
             this.cboEmployees.Location = new System.Drawing.Point(220, 90);
@@ -70,6 +77,16 @@
             this.cboEmployees.Size = new System.Drawing.Size(187, 28);
             this.cboEmployees.TabIndex = 3;
             this.cboEmployees.ValueMember = "EmployeeID";
+            // 
+            // employeeBindingSource
+            // 
+            this.employeeBindingSource.DataMember = "Employee";
+            this.employeeBindingSource.DataSource = this.PunchClockDataSet;
+            // 
+            // PunchClockDataSet
+            // 
+            this.PunchClockDataSet.DataSetName = "PunchClockDataSet";
+            this.PunchClockDataSet.SchemaSerializationMode = System.Data.SchemaSerializationMode.IncludeSchema;
             // 
             // txtNewPinCode
             // 
@@ -176,19 +193,28 @@
             this.lblChangePinCode.TabIndex = 12;
             this.lblChangePinCode.Text = "Note: Pin Codes must be 3-6 digits";
             // 
-            // PunchClockDataSet
-            // 
-            this.PunchClockDataSet.DataSetName = "PunchClockDataSet";
-            this.PunchClockDataSet.SchemaSerializationMode = System.Data.SchemaSerializationMode.IncludeSchema;
-            // 
-            // employeeBindingSource
-            // 
-            this.employeeBindingSource.DataMember = "Employee";
-            this.employeeBindingSource.DataSource = this.PunchClockDataSet;
-            // 
             // employeeTableAdapter
             // 
             this.employeeTableAdapter.ClearBeforeFill = true;
+            // 
+            // employeeShiftBindingSource
+            // 
+            this.employeeShiftBindingSource.DataMember = "EmployeeShift";
+            this.employeeShiftBindingSource.DataSource = this.employeeBindingSource;
+            // 
+            // shiftTableAdapter
+            // 
+            this.shiftTableAdapter.ClearBeforeFill = true;
+            // 
+            // punchClockDataSetBindingSource
+            // 
+            this.punchClockDataSetBindingSource.DataSource = this.PunchClockDataSet;
+            this.punchClockDataSetBindingSource.Position = 0;
+            // 
+            // employeeBindingSource1
+            // 
+            this.employeeBindingSource1.DataMember = "Employee";
+            this.employeeBindingSource1.DataSource = this.punchClockDataSetBindingSource;
             // 
             // ChangePasswordForm
             // 
@@ -210,8 +236,11 @@
             this.Name = "ChangePasswordForm";
             this.Text = "Change Pin Code";
             this.Load += new System.EventHandler(this.ChangePasswordForm_Load);
-            ((System.ComponentModel.ISupportInitialize)(this.PunchClockDataSet)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.PunchClockDataSet)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.employeeShiftBindingSource)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.punchClockDataSetBindingSource)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource1)).EndInit();
             this.ResumeLayout(false);
             this.PerformLayout();
 
@@ -233,5 +262,9 @@
         private PunchClockDataSet1 PunchClockDataSet;
         private System.Windows.Forms.BindingSource employeeBindingSource;
         private PunchClockDataSet1TableAdapters.EmployeeTableAdapter employeeTableAdapter;
+        private System.Windows.Forms.BindingSource employeeShiftBindingSource;
+        private PunchClockDataSet1TableAdapters.ShiftTableAdapter shiftTableAdapter;
+        private System.Windows.Forms.BindingSource employeeBindingSource1;
+        private System.Windows.Forms.BindingSource punchClockDataSetBindingSource;
     }
 }

@@ -32,8 +32,10 @@ namespace PunchClock
             this.components = new System.ComponentModel.Container();
             this.btnPunchInOut = new System.Windows.Forms.Button();
             this.cboEmployees = new System.Windows.Forms.ComboBox();
-            this.employeeBindingSource = new System.Windows.Forms.BindingSource(this.components);
+            this.employeeBindingSource1 = new System.Windows.Forms.BindingSource(this.components);
+            this.punchClockDataSetBindingSource = new System.Windows.Forms.BindingSource(this.components);
             this.punchClockDataSet = new PunchClock.PunchClockDataSet1();
+            this.employeeBindingSource = new System.Windows.Forms.BindingSource(this.components);
             this.lblStaff = new System.Windows.Forms.Label();
             this.lblPinCode = new System.Windows.Forms.Label();
             this.txtPinCode = new System.Windows.Forms.TextBox();
@@ -47,8 +49,10 @@ namespace PunchClock
             this.lblClock = new System.Windows.Forms.Label();
             this.lblDate = new System.Windows.Forms.Label();
             this.timer1 = new System.Windows.Forms.Timer(this.components);
-            ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource1)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.punchClockDataSetBindingSource)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.punchClockDataSet)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.shiftBindingSource)).BeginInit();
             this.groupBoxStaffActions.SuspendLayout();
             this.SuspendLayout();
@@ -67,7 +71,7 @@ namespace PunchClock
             // 
             // cboEmployees
             // 
-            this.cboEmployees.DataSource = this.employeeBindingSource;
+            this.cboEmployees.DataSource = this.employeeBindingSource1;
             this.cboEmployees.DisplayMember = "FullName";
             this.cboEmployees.Font = new System.Drawing.Font("Microsoft Sans Serif", 12F);
             this.cboEmployees.FormattingEnabled = true;
@@ -79,15 +83,25 @@ namespace PunchClock
             this.cboEmployees.ValueMember = "EmployeeID";
             this.cboEmployees.SelectionChangeCommitted += new System.EventHandler(this.cboEmployees_SelectionChangeCommitted);
             // 
-            // employeeBindingSource
+            // employeeBindingSource1
             // 
-            this.employeeBindingSource.DataMember = "Employee";
-            this.employeeBindingSource.DataSource = this.punchClockDataSet;
+            this.employeeBindingSource1.DataMember = "Employee";
+            this.employeeBindingSource1.DataSource = this.punchClockDataSetBindingSource;
+            // 
+            // punchClockDataSetBindingSource
+            // 
+            this.punchClockDataSetBindingSource.DataSource = this.punchClockDataSet;
+            this.punchClockDataSetBindingSource.Position = 0;
             // 
             // punchClockDataSet
             // 
             this.punchClockDataSet.DataSetName = "PunchClockDataSet";
             this.punchClockDataSet.SchemaSerializationMode = System.Data.SchemaSerializationMode.IncludeSchema;
+            // 
+            // employeeBindingSource
+            // 
+            this.employeeBindingSource.DataMember = "Employee";
+            this.employeeBindingSource.DataSource = this.punchClockDataSet;
             // 
             // lblStaff
             // 
@@ -230,8 +244,10 @@ namespace PunchClock
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
             this.Text = "Punch Clock";
             this.Load += new System.EventHandler(this.Form1_Load);
-            ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource1)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.punchClockDataSetBindingSource)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.punchClockDataSet)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.shiftBindingSource)).EndInit();
             this.groupBoxStaffActions.ResumeLayout(false);
             this.ResumeLayout(false);
@@ -258,6 +274,8 @@ namespace PunchClock
         private System.Windows.Forms.Label lblClock;
         private System.Windows.Forms.Label lblDate;
         private System.Windows.Forms.Timer timer1;
+        private System.Windows.Forms.BindingSource employeeBindingSource1;
+        private System.Windows.Forms.BindingSource punchClockDataSetBindingSource;
     }
 }
 
