@@ -57,33 +57,33 @@ namespace PunchClock
 
         private void btnPunchInOut_Click(object sender, EventArgs e)
         {
-            DateTime currentTime = DateTime.Now;
-            
-            SavoiaPunchClockDataSetTableAdapters.EmployeeTableAdapter employeeTableAdapter = new SavoiaPunchClockDataSetTableAdapters.EmployeeTableAdapter();
-
-            if (txtPinCode.TextLength < 1)
-            {
-                MessageBox.Show("You must enter your 3-6 digit Pin Code to Punch In");
-                return;
-            }
-
             int employeeId = Convert.ToInt32(cboEmployees.SelectedValue);
 
             if (employeeId == 0)
             {
-                MessageBox.Show("You must select an employee in order to Punch In");
+                MessageBox.Show("You must select an employee in order to Punch In/Out", "Incomplete Form", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            DateTime currentTime = DateTime.Now;
+
+            PunchClockDataSet1TableAdapters.EmployeeTableAdapter employeeTableAdapter = new PunchClockDataSet1TableAdapters.EmployeeTableAdapter();
+
+            if (txtPinCode.TextLength < 1)
+            {
+                MessageBox.Show("You must enter your 3-6 digit Pin Code to Punch In", "Incomplete Form", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             int pinCodeSubmitted = Convert.ToInt32(txtPinCode.Text);
 
-            SavoiaPunchClockDataSetTableAdapters.ShiftTableAdapter shiftTableAdapter = new SavoiaPunchClockDataSetTableAdapters.ShiftTableAdapter();
+            PunchClockDataSet1TableAdapters.ShiftTableAdapter shiftTableAdapter = new PunchClockDataSet1TableAdapters.ShiftTableAdapter();
 
             int pinCodeStored = (int)employeeTableAdapter.GetEmployeePinCode(employeeId);
 
             if(pinCodeSubmitted != pinCodeStored)
             {
-                MessageBox.Show("Incorrect Pin Code");
+                MessageBox.Show("Incorrect Pin Code", "Invalid Form", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
@@ -94,16 +94,20 @@ namespace PunchClock
             if (isEmployeePunchedOut == 0)
             {
                 shiftTableAdapter.PunchOut(currentTime,lastShiftRecordId);
-                MessageBox.Show("You have punched out at " + currentTime);
+                MessageBox.Show("You have punched out at " + currentTime.ToString("dddd, dd MMMM yyyy hh:mm tt"), "Punch Out", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
 
             else if(isEmployeePunchedOut == 1)
             {
-                MessageBox.Show("You have clocked in at " + currentTime);
+                MessageBox.Show("You have punched in at " + currentTime.ToString("dddd, dd MMMM yyyy hh:mm tt"), "Punch In", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 shiftTableAdapter.Insert(employeeId, currentTime, null);
             }
 
             txtPinCode.Text = "";
+            cboEmployees.SelectedItem = null;
+            cboEmployees.SelectedText = "--Select A Staff Member--";
+            btnPunchInOut.BackColor = Color.Gray;
+            btnPunchInOut.Text = "";
         }
 
         private void Form1_Load(object sender, EventArgs e)
@@ -112,10 +116,11 @@ namespace PunchClock
             lblDate.Text = DateTime.Now.ToString("dddd MMMM dd, yyyy");
             timer1_Tick(sender,e);
 
-            // TODO: This line of code loads data into the 'savoiaPunchClockDataSet.Employee' table. You can move, or remove it, as needed.
-            this.employeeTableAdapter.Fill(this.savoiaPunchClockDataSet.Employee);
+            // TODO: This line of code loads data into the 'punchClockDataSet.Employee' table. You can move, or remove it, as needed.
+            this.employeeTableAdapter.Fill(this.punchClockDataSet.Employee);
 
-            employeeLastActionUpdate();
+            cboEmployees.SelectedItem = null;
+            cboEmployees.SelectedText = "--Select A Staff Member--";
 
             // Timer for the clock on form
             System.Timers.Timer timer = new System.Timers.Timer();
@@ -162,9 +167,10 @@ namespace PunchClock
         {
             int employeeId = Convert.ToInt32(cboEmployees.SelectedValue);
 
-            SavoiaPunchClockDataSetTableAdapters.ShiftTableAdapter shiftTableAdapter = new SavoiaPunchClockDataSetTableAdapters.ShiftTableAdapter();
+            PunchClockDataSet1TableAdapters.ShiftTableAdapter shiftTableAdapter = new PunchClockDataSet1TableAdapters.ShiftTableAdapter();
 
             // if returned value is a 0 then the employee's last shift action was Punching In, if 1 then the employee's last shift action was Punching Out
+
             int isEmployeeLastActionPunchedOut = (int)shiftTableAdapter.GetLastShiftRecord(employeeId);
 
             if (isEmployeeLastActionPunchedOut == 0) // no
@@ -180,7 +186,7 @@ namespace PunchClock
             }
         }
 
-        private void cboEmployees_SelectedIndexChanged(object sender, EventArgs e)
+        private void cboEmployees_SelectionChangeCommitted(object sender, EventArgs e)
         {
             employeeLastActionUpdate();
         }

@@ -49,12 +49,18 @@ namespace PunchClock
             }
 
             // Create new TableAdapter so we can insert row
-            SavoiaPunchClockDataSetTableAdapters.EmployeeTableAdapter employeeTableAdapter = new SavoiaPunchClockDataSetTableAdapters.EmployeeTableAdapter();
+            PunchClockDataSet1TableAdapters.EmployeeTableAdapter employeeTableAdapter = new PunchClockDataSet1TableAdapters.EmployeeTableAdapter();
+            PunchClockDataSet1TableAdapters.ShiftTableAdapter shiftTableAdapter = new PunchClockDataSet1TableAdapters.ShiftTableAdapter();
 
             // add employee
             employeeTableAdapter.Insert(txtFirstName.Text, txtLastName.Text, Convert.ToInt32(txtPinCode.Text));
 
-            MessageBox.Show("Staff member '" +txtFirstName.Text + " " + txtLastName.Text + "' has been successfully added into the system.");
+            int recentlyAddedEmployeeID = (int)employeeTableAdapter.GetLatestEmployeeID();
+
+            // insert record into shift table to so last shift action query functions properly without null results
+            shiftTableAdapter.Insert(recentlyAddedEmployeeID, DateTime.Now, DateTime.Now);
+
+            MessageBox.Show("Staff member '" +txtFirstName.Text + " " + txtLastName.Text + "' has been successfully added into the system.\n\nPlease restart the application in order for your changes to take effect.","New Employee Added!", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
             // close form
             this.Close();

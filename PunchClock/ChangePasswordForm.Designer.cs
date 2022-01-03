@@ -40,10 +40,10 @@
             this.btnCancel = new System.Windows.Forms.Button();
             this.btnUpdateStaffPassword = new System.Windows.Forms.Button();
             this.lblChangePinCode = new System.Windows.Forms.Label();
-            this.savoiaPunchClockDataSet = new PunchClock.SavoiaPunchClockDataSet();
+            this.PunchClockDataSet = new PunchClock.PunchClockDataSet();
             this.employeeBindingSource = new System.Windows.Forms.BindingSource(this.components);
-            this.employeeTableAdapter = new PunchClock.SavoiaPunchClockDataSetTableAdapters.EmployeeTableAdapter();
-            ((System.ComponentModel.ISupportInitialize)(this.savoiaPunchClockDataSet)).BeginInit();
+            this.employeeTableAdapter = new PunchClock.PunchClockDataSetTableAdapters.EmployeeTableAdapter();
+            ((System.ComponentModel.ISupportInitialize)(this.PunchClockDataSet)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource)).BeginInit();
             this.SuspendLayout();
             // 
@@ -176,15 +176,15 @@
             this.lblChangePinCode.TabIndex = 12;
             this.lblChangePinCode.Text = "Note: Pin Codes must be 3-6 digits";
             // 
-            // savoiaPunchClockDataSet
+            // PunchClockDataSet
             // 
-            this.savoiaPunchClockDataSet.DataSetName = "SavoiaPunchClockDataSet";
-            this.savoiaPunchClockDataSet.SchemaSerializationMode = System.Data.SchemaSerializationMode.IncludeSchema;
+            this.PunchClockDataSet.DataSetName = "PunchClockDataSet";
+            this.PunchClockDataSet.SchemaSerializationMode = System.Data.SchemaSerializationMode.IncludeSchema;
             // 
             // employeeBindingSource
             // 
             this.employeeBindingSource.DataMember = "Employee";
-            this.employeeBindingSource.DataSource = this.savoiaPunchClockDataSet;
+            this.employeeBindingSource.DataSource = this.PunchClockDataSet;
             // 
             // employeeTableAdapter
             // 
@@ -210,7 +210,7 @@
             this.Name = "ChangePasswordForm";
             this.Text = "Change Pin Code";
             this.Load += new System.EventHandler(this.ChangePasswordForm_Load);
-            ((System.ComponentModel.ISupportInitialize)(this.savoiaPunchClockDataSet)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.PunchClockDataSet)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource)).EndInit();
             this.ResumeLayout(false);
             this.PerformLayout();
@@ -230,8 +230,8 @@
         private System.Windows.Forms.Button btnCancel;
         private System.Windows.Forms.Button btnUpdateStaffPassword;
         private System.Windows.Forms.Label lblChangePinCode;
-        private SavoiaPunchClockDataSet savoiaPunchClockDataSet;
+        private PunchClockDataSet PunchClockDataSet;
         private System.Windows.Forms.BindingSource employeeBindingSource;
-        private SavoiaPunchClockDataSetTableAdapters.EmployeeTableAdapter employeeTableAdapter;
+        private PunchClockDataSetTableAdapters.EmployeeTableAdapter employeeTableAdapter;
     }
 }

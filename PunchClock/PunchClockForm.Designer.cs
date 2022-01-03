@@ -33,13 +33,13 @@ namespace PunchClock
             this.btnPunchInOut = new System.Windows.Forms.Button();
             this.cboEmployees = new System.Windows.Forms.ComboBox();
             this.employeeBindingSource = new System.Windows.Forms.BindingSource(this.components);
-            this.savoiaPunchClockDataSet = new PunchClock.SavoiaPunchClockDataSet();
+            this.punchClockDataSet = new PunchClock.PunchClockDataSet();
             this.lblStaff = new System.Windows.Forms.Label();
             this.lblPinCode = new System.Windows.Forms.Label();
             this.txtPinCode = new System.Windows.Forms.TextBox();
-            this.employeeTableAdapter = new PunchClock.SavoiaPunchClockDataSetTableAdapters.EmployeeTableAdapter();
+            this.employeeTableAdapter = new PunchClock.PunchClockDataSetTableAdapters.EmployeeTableAdapter();
             this.shiftBindingSource = new System.Windows.Forms.BindingSource(this.components);
-            this.shiftTableAdapter = new PunchClock.SavoiaPunchClockDataSetTableAdapters.ShiftTableAdapter();
+            this.shiftTableAdapter = new PunchClock.PunchClockDataSetTableAdapters.ShiftTableAdapter();
             this.btnChangePassword = new System.Windows.Forms.Button();
             this.groupBoxStaffActions = new System.Windows.Forms.GroupBox();
             this.btnNewStaff = new System.Windows.Forms.Button();
@@ -48,7 +48,7 @@ namespace PunchClock
             this.lblDate = new System.Windows.Forms.Label();
             this.timer1 = new System.Windows.Forms.Timer(this.components);
             ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.savoiaPunchClockDataSet)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.punchClockDataSet)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.shiftBindingSource)).BeginInit();
             this.groupBoxStaffActions.SuspendLayout();
             this.SuspendLayout();
@@ -77,17 +77,17 @@ namespace PunchClock
             this.cboEmployees.Size = new System.Drawing.Size(194, 28);
             this.cboEmployees.TabIndex = 1;
             this.cboEmployees.ValueMember = "EmployeeID";
-            this.cboEmployees.SelectedIndexChanged += new System.EventHandler(this.cboEmployees_SelectedIndexChanged);
+            this.cboEmployees.SelectionChangeCommitted += new System.EventHandler(this.cboEmployees_SelectionChangeCommitted);
             // 
             // employeeBindingSource
             // 
             this.employeeBindingSource.DataMember = "Employee";
-            this.employeeBindingSource.DataSource = this.savoiaPunchClockDataSet;
+            this.employeeBindingSource.DataSource = this.punchClockDataSet;
             // 
-            // savoiaPunchClockDataSet
+            // punchClockDataSet
             // 
-            this.savoiaPunchClockDataSet.DataSetName = "SavoiaPunchClockDataSet";
-            this.savoiaPunchClockDataSet.SchemaSerializationMode = System.Data.SchemaSerializationMode.IncludeSchema;
+            this.punchClockDataSet.DataSetName = "PunchClockDataSet";
+            this.punchClockDataSet.SchemaSerializationMode = System.Data.SchemaSerializationMode.IncludeSchema;
             // 
             // lblStaff
             // 
@@ -130,7 +130,7 @@ namespace PunchClock
             // shiftBindingSource
             // 
             this.shiftBindingSource.DataMember = "Shift";
-            this.shiftBindingSource.DataSource = this.savoiaPunchClockDataSet;
+            this.shiftBindingSource.DataSource = this.punchClockDataSet;
             // 
             // shiftTableAdapter
             // 
@@ -228,10 +228,10 @@ namespace PunchClock
             this.Margin = new System.Windows.Forms.Padding(2);
             this.Name = "PunchClockForm";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
-            this.Text = "Savoia Punch Clock";
+            this.Text = "Punch Clock";
             this.Load += new System.EventHandler(this.Form1_Load);
             ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.savoiaPunchClockDataSet)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.punchClockDataSet)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.shiftBindingSource)).EndInit();
             this.groupBoxStaffActions.ResumeLayout(false);
             this.ResumeLayout(false);
@@ -246,11 +246,11 @@ namespace PunchClock
         private System.Windows.Forms.Label lblStaff;
         private System.Windows.Forms.Label lblPinCode;
         private System.Windows.Forms.TextBox txtPinCode;
-        private SavoiaPunchClockDataSet savoiaPunchClockDataSet;
+        private PunchClockDataSet punchClockDataSet;
         private System.Windows.Forms.BindingSource employeeBindingSource;
-        private SavoiaPunchClockDataSetTableAdapters.EmployeeTableAdapter employeeTableAdapter;
+        private PunchClockDataSetTableAdapters.EmployeeTableAdapter employeeTableAdapter;
         private System.Windows.Forms.BindingSource shiftBindingSource;
-        private SavoiaPunchClockDataSetTableAdapters.ShiftTableAdapter shiftTableAdapter;
+        private PunchClockDataSetTableAdapters.ShiftTableAdapter shiftTableAdapter;
         private System.Windows.Forms.Button btnChangePassword;
         private System.Windows.Forms.GroupBox groupBoxStaffActions;
         private System.Windows.Forms.Label lblInstructions;
