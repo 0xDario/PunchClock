@@ -40,9 +40,9 @@
             this.btnCancel = new System.Windows.Forms.Button();
             this.btnUpdateStaffPassword = new System.Windows.Forms.Button();
             this.lblChangePinCode = new System.Windows.Forms.Label();
-            this.PunchClockDataSet = new PunchClock.PunchClockDataSet();
+            this.PunchClockDataSet = new PunchClock.PunchClockDataSet1();
             this.employeeBindingSource = new System.Windows.Forms.BindingSource(this.components);
-            this.employeeTableAdapter = new PunchClock.PunchClockDataSetTableAdapters.EmployeeTableAdapter();
+            this.employeeTableAdapter = new PunchClock.PunchClockDataSet1TableAdapters.EmployeeTableAdapter();
             ((System.ComponentModel.ISupportInitialize)(this.PunchClockDataSet)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.employeeBindingSource)).BeginInit();
             this.SuspendLayout();
@@ -230,8 +230,8 @@
         private System.Windows.Forms.Button btnCancel;
         private System.Windows.Forms.Button btnUpdateStaffPassword;
         private System.Windows.Forms.Label lblChangePinCode;
-        private PunchClockDataSet PunchClockDataSet;
+        private PunchClockDataSet1 PunchClockDataSet;
         private System.Windows.Forms.BindingSource employeeBindingSource;
-        private PunchClockDataSetTableAdapters.EmployeeTableAdapter employeeTableAdapter;
+        private PunchClockDataSet1TableAdapters.EmployeeTableAdapter employeeTableAdapter;
     }
 }
