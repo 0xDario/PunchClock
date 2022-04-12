@@ -37,8 +37,8 @@ namespace PunchClock.Properties {
         [global::System.Configuration.ApplicationScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.SpecialSettingAttribute(global::System.Configuration.SpecialSetting.ConnectionString)]
-        [global::System.Configuration.DefaultSettingValueAttribute("Provider=Microsoft.ACE.OLEDB.12.0;Data Source=\"\\\\192.168.2.204\\Public\\Shared Code" +
-            "\\PunchClock\\PunchClock\\PunchClock.accdb\";Jet OLEDB:Database Password=admin123")]
+        [global::System.Configuration.DefaultSettingValueAttribute("Provider=Microsoft.ACE.OLEDB.12.0;Data Source=\"PunchClock.accdb\";Jet OLEDB:Databa" +
+            "se Password=admin123")]
         public string PunchClockConnectionString1 {
             get {
                 return ((string)(this["PunchClockConnectionString1"]));
