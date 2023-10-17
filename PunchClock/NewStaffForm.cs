@@ -53,7 +53,7 @@ namespace PunchClock
             PunchClockDataSet1TableAdapters.ShiftTableAdapter shiftTableAdapter = new PunchClockDataSet1TableAdapters.ShiftTableAdapter();
 
             // add employee
-            employeeTableAdapter.Insert(txtFirstName.Text, txtLastName.Text, Convert.ToInt32(txtPinCode.Text));
+            employeeTableAdapter.Insert(txtFirstName.Text, txtLastName.Text, Convert.ToInt32(txtPinCode.Text), 1);
 
             int recentlyAddedEmployeeID = (int)employeeTableAdapter.GetLatestEmployeeID();
 

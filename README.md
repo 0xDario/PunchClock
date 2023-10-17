@@ -14,3 +14,6 @@ _A basic Windows Forms Punch Clock application that allows staff to Punch In/Out
 
 Application in Action:
 ![Punch Clock Windows Form Demo](https://github.com/0xDario/PunchClock/blob/master/PunchClock.gif)
+
+## Dependencies
+- [Microsoft.ACE.OLEDB12.0](https://www.microsoft.com/en-us/download/details.aspx?id=13255)

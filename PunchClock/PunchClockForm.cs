@@ -116,7 +116,7 @@ namespace PunchClock
             lblDate.Text = DateTime.Now.ToString("dddd MMMM dd, yyyy");
             timer1_Tick(sender,e);
 
-            // TODO: This line of code loads data into the 'punchClockDataSet.Employee' table. You can move, or remove it, as needed.
+            // This line of code loads data into the 'punchClockDataSet.Employee' table. You can move, or remove it, as needed. (
             this.employeeTableAdapter.Fill(this.punchClockDataSet.Employee);
 
             cboEmployees.SelectedItem = null;
