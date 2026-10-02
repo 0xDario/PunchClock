@@ -1,0 +1,39 @@
+name: modern-ci
+
+on:
+  push:
+    branches: [master]
+    paths: ["modern/**", ".github/workflows/modern-ci.yml"]
+  pull_request:
+    paths: ["modern/**", ".github/workflows/modern-ci.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: modern
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: modern/global.json
+
+      - name: Restore
+        run: dotnet restore PunchClock.Modern.sln
+
+      - name: Build
+        run: dotnet build PunchClock.Modern.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test PunchClock.Modern.sln -c Release --no-build --logger "trx;LogFileName=results.trx"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: modern/tests/**/TestResults/*.trx
