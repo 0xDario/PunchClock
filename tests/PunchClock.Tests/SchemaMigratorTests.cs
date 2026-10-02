@@ -55,6 +55,31 @@ public sealed class SchemaMigratorTests : DatabaseTest
     }
 
     [Fact]
+    public async Task Bundled_sqlite_meets_the_schema_minimum()
+    {
+        var version = Version.Parse(await Db.ScalarAsync<string>("SELECT sqlite_version();"));
+
+        Assert.True(version >= SchemaMigrator.MinimumSqliteVersion, $"Bundled SQLite is {version}.");
+    }
+
+    [Theory]
+    [InlineData("3.41.2")]
+    [InlineData("3.43.99")]
+    [InlineData("garbage")]
+    public void Older_sqlite_engines_stop_startup(string version)
+    {
+        Assert.Throws<SchemaMismatchException>(() => SchemaMigrator.EnsureSupportedEngine(version));
+    }
+
+    [Theory]
+    [InlineData("3.44.0")]
+    [InlineData("3.53.3")]
+    public void Supported_sqlite_engines_pass(string version)
+    {
+        SchemaMigrator.EnsureSupportedEngine(version);
+    }
+
+    [Fact]
     public void Checksum_ignores_line_endings()
     {
         Assert.Equal(
