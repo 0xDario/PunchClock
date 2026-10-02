@@ -62,6 +62,7 @@ public sealed class LegacyImporterTests : IAsyncLifetime
         Assert.Contains("30 DUMMY_SHIFT SKIPPED", issues);
         Assert.Contains("32 ORPHAN_EMPLOYEE SKIPPED", issues);
         Assert.Contains("33 DST_AMBIGUOUS IMPORTED_FLAGGED", issues);
+        Assert.Contains("33 CROSSES_DST IMPORTED_FLAGGED", issues);
         Assert.Contains("34 OPEN_SHIFT IMPORTED_FLAGGED", issues);
 
         // The import's own audit event carries the source hash and the manifest counts.
