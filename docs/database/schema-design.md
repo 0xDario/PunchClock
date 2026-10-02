@@ -203,11 +203,11 @@ Pairs with the exporter in `migration/legacy-export/` (PR #4): `Employee.csv`, `
 
 ## 10. Notes for the app scaffold
 
-The scaffold's `0001_initial.sql` uses the same column names (`occurred_utc`, `utc_offset_minutes`, `recorded_utc`, `created_utc`, `legacy_id`). To adopt this design:
+The scaffold's initial migration uses the same column names (`occurred_utc`, `utc_offset_minutes`, `recorded_utc`, `created_utc`, `legacy_id`). To adopt this design:
 
-- Replace `0001_initial.sql` with `schema.sql` (minus the two header `PRAGMA`s if the runner owns versioning). The runner's `schema_migrations` table is excluded from the fingerprint and is not audited; the runner should write a `SCHEMA_MIGRATE` audit event carrying the script checksum and the new fingerprint.
-- **Pin a newer SQLite.** `Microsoft.Data.Sqlite` 8.0.10 bundles SQLite 3.41.2, which cannot parse this schema (`ORDER BY` inside an aggregate needs 3.44). Add `<PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.10" />` (SQLite 3.46.1) and assert `sqlite_version() >= 3.44` at startup. The test suite passes on 3.46.1 and fails to load on 3.41.2.
-- The connection factory must register `pc_sha256` and `pc_ctx` and set `trusted_schema = ON` on every open, migrations included. The migration runs with actor `('user', 1)`.
+- Use `schema.sql` as the initial migration (minus the two header `PRAGMA`s if the runner owns versioning). The runner's `schema_migrations` table is excluded from the fingerprint and is not audited; the runner should write a `SCHEMA_MIGRATE` audit event carrying the script checksum and the new fingerprint.
+- **SQLite 3.44 minimum.** `ORDER BY` inside an aggregate (`schema_fingerprint_v`) needs 3.44; older builds reject the schema at load. Assert `sqlite_version() >= 3.44` at startup. Do not pin an older native bundle over what the `Microsoft.Data.Sqlite` package ships. The test suite passes on 3.45.1 and 3.46.1 and fails to load on 3.41.2.
+- The connection factory must register `pc_sha256` and `pc_ctx` and set `trusted_schema = ON` on every open, **before the schema migration runs**: the seed inserts in `schema.sql` fire audit triggers that call both. The migration runs with actor `('user', 1)`.
 - `punch.source` values are `kiosk`, `correction`, `legacy_import`. The kiosk must not insert `correction` punches; it inserts `punch_correction` rows.
 - Prefer Dapper or plain ADO.NET over EF Core for writes. If EF Core is used, call `ToTable(t => t.UseSqlReturningClause(false))` on every entity: since EF Core 7, saving to SQLite tables with `AFTER` triggers via `RETURNING` fails ([EF Core 7 breaking changes](https://learn.microsoft.com/ef/core/what-is-new/ef-core-7.0/breaking-changes#high-impact-changes)).
 
