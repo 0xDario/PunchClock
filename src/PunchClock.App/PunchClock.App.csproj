@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>PunchClock.App</RootNamespace>
+    <AssemblyName>PunchClock</AssemblyName>
+    <!-- Lets the solution build (not run) on Linux/macOS dev boxes and CI agents. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PunchClock.Core\PunchClock.Core.csproj" />
+    <ProjectReference Include="..\PunchClock.Data.Sqlite\PunchClock.Data.Sqlite.csproj" />
+  </ItemGroup>
+
+</Project>

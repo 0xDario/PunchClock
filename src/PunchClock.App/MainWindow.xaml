@@ -1,0 +1,50 @@
+<Window x:Class="PunchClock.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="PunchClock" Width="560" Height="520" MinWidth="460" MinHeight="460"
+        WindowStartupLocation="CenterScreen" FontSize="16">
+    <Grid Margin="32">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="{Binding Clock}" FontSize="56" FontWeight="SemiBold" HorizontalAlignment="Center" />
+        <TextBlock Grid.Row="1" Text="{Binding Date}" Foreground="Gray" HorizontalAlignment="Center" Margin="0,0,0,24" />
+
+        <StackPanel Grid.Row="2" Margin="0,0,0,12">
+            <Label Content="_Name" Target="{Binding ElementName=EmployeeBox}" Padding="0,0,0,4" />
+            <ComboBox x:Name="EmployeeBox" ItemsSource="{Binding Employees}" SelectedItem="{Binding SelectedEmployee}"
+                      DisplayMemberPath="DisplayName" Padding="8" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="3" Margin="0,0,0,20">
+            <Label Content="_PIN" Target="{Binding ElementName=PinBox}" Padding="0,0,0,4" />
+            <PasswordBox x:Name="PinBox" MaxLength="6" Padding="8" PreviewTextInput="PinBox_PreviewTextInput"
+                         DataObject.Pasting="PinBox_Pasting" />
+        </StackPanel>
+
+        <UniformGrid Grid.Row="4" Columns="2">
+            <Button Content="Punch _In" Click="PunchIn_Click" IsEnabled="{Binding CanPunch}"
+                    Margin="0,0,8,0" Padding="12" Background="#2E7D32" Foreground="White" FontWeight="SemiBold" />
+            <Button Content="Punch _Out" Click="PunchOut_Click" IsEnabled="{Binding CanPunch}"
+                    Margin="8,0,0,0" Padding="12" Background="#C62828" Foreground="White" FontWeight="SemiBold" />
+        </UniformGrid>
+
+        <TextBlock Grid.Row="5" Text="{Binding Message}" TextWrapping="Wrap" Margin="0,20,0,0">
+            <TextBlock.Style>
+                <Style TargetType="TextBlock">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding MessageIsError}" Value="True">
+                            <Setter Property="Foreground" Value="#C62828" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </TextBlock.Style>
+        </TextBlock>
+    </Grid>
+</Window>
