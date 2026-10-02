@@ -361,3 +361,8 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# Modern app: local SQLite databases and test output
+*.db
+*.db-wal
+*.db-shm
+TestResults/

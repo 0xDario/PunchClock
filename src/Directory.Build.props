@@ -1,0 +1,16 @@
+<Project>
+  <!-- Shared settings for the modern app. Scoped to src/ and tests/ so the legacy
+       .NET Framework project at PunchClock/ is not affected. -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Vulnerability advisories should be visible, not break an unrelated build. -->
+    <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+    <Deterministic>true</Deterministic>
+    <!-- v1.x tags are the legacy WinForms + Access app. -->
+    <Version>2.0.0</Version>
+    <Product>PunchClock</Product>
+  </PropertyGroup>
+</Project>
