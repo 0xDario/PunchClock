@@ -1,5 +1,7 @@
+using PunchClock.Core.Audit;
 using PunchClock.Core.Persistence;
 using PunchClock.Core.Security;
+using PunchClock.Core.Site;
 
 namespace PunchClock.Core.Punches;
 
@@ -22,11 +24,10 @@ public enum PunchRejection
 /// <param name="Punch">The recorded punch, when accepted.</param>
 /// <param name="Rejection">Why nothing was recorded, when rejected.</param>
 /// <param name="LastPunch">The employee's latest punch before this attempt, for user-facing context.</param>
-public sealed record PunchResult(Punch? Punch, PunchRejection? Rejection, Punch? LastPunch)
+/// <param name="PinMustChange">The PIN was right but must be replaced (imported employees).</param>
+public sealed record PunchResult(Punch? Punch, PunchRejection? Rejection, Punch? LastPunch, bool PinMustChange = false)
 {
     public bool Accepted => Punch is not null;
-
-    internal static PunchResult Ok(Punch punch, Punch? last) => new(punch, null, last);
 
     internal static PunchResult Reject(PunchRejection reason, Punch? last = null) => new(null, reason, last);
 }
@@ -35,6 +36,7 @@ public sealed record PunchResult(Punch? Punch, PunchRejection? Rejection, Punch?
 /// Records punches by explicit intent. The employee says "in" or "out"; the service checks that
 /// intent against the current state instead of toggling, so a forgotten punch-out surfaces as
 /// <see cref="PunchRejection.AlreadyPunchedIn"/> rather than silently becoming a multi-day shift.
+/// The database enforces the same ownership and timing rules again in its triggers.
 /// </summary>
 public sealed class PunchService(IPunchClockStore store, IPinHasher pinHasher, TimeProvider clock)
 {
@@ -55,8 +57,13 @@ public sealed class PunchService(IPunchClockStore store, IPinHasher pinHasher, T
             return PunchResult.Reject(PunchRejection.EmployeeInactive);
         }
 
+        // Every write from here on is attributed to the employee whose PIN was entered.
+        uow.ActAs(AuditActor.ForEmployee(employeeId));
+
         if (!pinHasher.Verify(pin, employee.PinHash))
         {
+            await uow.RecordEventAsync(AuditEvent.AuthPinFailed, ct: ct);
+            await uow.CommitAsync(ct);
             return PunchResult.Reject(PunchRejection.InvalidPin);
         }
 
@@ -79,12 +86,11 @@ public sealed class PunchService(IPunchClockStore store, IPinHasher pinHasher, T
             return PunchResult.Reject(PunchRejection.ClockBehindLastPunch, last);
         }
 
-        var offset = clock.LocalTimeZone.GetUtcOffset(now);
-        var punch = await uow.AppendPunchAsync(
-            new NewPunch(employeeId, direction, now, (int)offset.TotalMinutes, now, PunchSource.Kiosk),
-            ct);
+        var zone = SiteTime.ResolveZone(await uow.GetSettingAsync(SiteSettingKeys.TimeZoneId, ct), clock.LocalTimeZone);
+        var offset = (int)zone.GetUtcOffset(now).TotalMinutes;
+        var punch = await uow.AppendKioskPunchAsync(employeeId, direction, now, offset, ct);
 
         await uow.CommitAsync(ct);
-        return PunchResult.Ok(punch, last);
+        return new PunchResult(punch, null, last, employee.PinMustChange);
     }
 }

@@ -50,12 +50,12 @@ public sealed partial class MainViewModel(EmployeeService employees, PunchServic
         Date = now.ToString("D", CultureInfo.CurrentCulture);
     }
 
-    /// <returns>true when the punch was recorded.</returns>
-    public async Task<bool> PunchAsync(PunchDirection direction, string pin)
+    /// <returns>The outcome, or null when nothing was attempted or the attempt failed.</returns>
+    public async Task<PunchResult?> PunchAsync(PunchDirection direction, string pin)
     {
         if (SelectedEmployee is not { } employee)
         {
-            return false;
+            return null;
         }
 
         IsBusy = true;
@@ -69,13 +69,13 @@ public sealed partial class MainViewModel(EmployeeService employees, PunchServic
                 SelectedEmployee = null;
             }
 
-            return result.Accepted;
+            return result;
         }
         catch (Exception ex)
         {
             // The message only ever claims success after the commit returned.
             Show($"Punch NOT recorded: {ex.Message}", isError: true);
-            return false;
+            return null;
         }
         finally
         {
@@ -83,7 +83,7 @@ public sealed partial class MainViewModel(EmployeeService employees, PunchServic
         }
     }
 
-    private void Show(string message, bool isError)
+    public void Show(string message, bool isError)
     {
         Message = message;
         MessageIsError = isError;

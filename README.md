@@ -31,13 +31,16 @@ Application in Action:
 | `src/PunchClock.Migration` | Legacy import: verifies the exporter's CSVs and manifest, flags anomalies, writes the audit-logged import. |
 | `src/PunchClock.Import` | `PunchClock.Import.exe`, the one-time import program shipped in the installer. |
 | `tests/PunchClock.Tests` | xUnit v3 tests against real SQLite files. |
-| `tests/PunchClock.Migration.Tests` | Importer tests against `docs/database/schema.sql`. |
+| `tests/PunchClock.Migration.Tests` | Importer tests against a database created by the app's own migrations. |
 
 Requires the .NET 10 SDK. On Windows: `dotnet run --project src/PunchClock.App`. Anywhere: `dotnet build PunchClock.Modern.sln` and `dotnet test --solution PunchClock.Modern.sln` (the WPF project builds on Linux/macOS but only runs on Windows).
 
 - **Database**: `%ProgramData%\PunchClock\punchclock.db`, or the path in `PUNCHCLOCK_DB`. Created and migrated on startup. Debug builds seed two demo employees (PINs `1234` and `0042`).
-- **Punches** are immutable IN/OUT events stored in UTC with the site's UTC offset; shifts are derived. The employee chooses In or Out and the app refuses a choice that contradicts their current state, so a forgotten punch-out is surfaced instead of silently becoming a multi-day shift.
-- **Migrations** are `src/PunchClock.Data.Sqlite/Migrations/NNNN_name.sql`, applied in order in one transaction and checksummed. Never edit an applied migration; add a new one.
+- **Schema** is the audit-log design in `docs/database/` (PR #6), shipped as migration `0001_audit_schema.sql`. Database triggers write a hash-chained before/after record of every change, check who may make it, and refuse any write from a connection without an actor. Generic SQLite tools can read the file but not write it.
+- **Code that opens the database** (the kiosk, the importer) goes through `PunchClockDatabase.OpenAndMigrateAsync()` and `SqliteDatabase.OpenAsync(AuditContext)`, which register `pc_sha256`/`pc_ctx` and set the required pragmas. Set `AuditContext.Actor` before writing.
+- **Punches** are immutable IN/OUT events stored in UTC (millisecond precision) with the site's UTC offset; shifts are derived. The employee chooses In or Out and the app refuses a choice that contradicts their current state, so a forgotten punch-out is surfaced instead of silently becoming a multi-day shift. Employees flagged for a PIN reset (all imported staff) choose a new PIN after their next punch.
+- **Admin** button on the kiosk: the first click creates the admin account; after that it signs in. Admins set the site time zone, deactivate accounts (for example the `migration` account after the import), and add or deactivate employees.
+- **Migrations** are `src/PunchClock.Data.Sqlite/Migrations/NNNN_name.sql`, applied in order in one transaction, checksummed, and audited as `SCHEMA_MIGRATE`. Never edit an applied migration; add a new one.
 
 ## Moving from the old PunchClock app
 
@@ -51,7 +54,7 @@ One-time switchover of a PC running the old app (v1.x, Access database) to v2. D
 
 3. **Print the old hours report** for the last complete month, the way you normally run it (if that means opening the file in Access, open a copy of the backup, never the original). You will compare it with the new app in step 7.
 
-4. **Install v2.** Run the installer. It is not code-signed yet, so Windows shows *Windows protected your PC*: click **More info**, then **Run anyway**. It installs to Program Files, creates `C:\ProgramData\PunchClock` for the database, and adds a Start menu folder *PunchClock > Move data from the old app*. Do not punch in the new app yet.
+4. **Install v2 and create the admin.** Run the installer. It is not code-signed yet, so Windows shows *Windows protected your PC*: click **More info**, then **Run anyway**. It installs to Program Files, creates `C:\ProgramData\PunchClock` for the database, and adds a Start menu folder *PunchClock > Move data from the old app*. Then start *PunchClock*, click **Admin** and create the admin account right away: until an admin exists, whoever clicks Admin first becomes the admin. Do not add employees or punch yet, or the import will refuse to run.
 
 5. **Export the old data.** Start menu > *PunchClock > Move data from the old app > 1. Export old data*, then pick the original `PunchClock.accdb` from step 2. The exporter works on a copy, checks every row count with Access, records this PC's time zone, and writes `legacy-export-<timestamp>.zip` to the Desktop. If it says the database is open, the old app is still running; close it and try again.
 
@@ -59,9 +62,11 @@ One-time switchover of a PC running the old app (v1.x, Access database) to v2. D
 
 7. **Reconcile hours.** Open `hours-by-month.csv` (next to the zip on the Desktop, in the `-import` folder). For the month you printed in step 3, each employee's `legacy_report_hours` must equal the old report's total exactly. Employee and shift counts are already checked by the importer, which refuses to finish if any row is missing. If the hours do not match, keep using the old app and send the zip and both report folders to whoever maintains PunchClock; nothing in the old database has changed.
 
-8. **Switch over.** Start *PunchClock* from the Start menu and check that every employee is listed. Anyone still punched in at the export shows as punched in. PINs carry over, but the old app stored them as numbers, so a PIN that started with 0 lost that digit (`0123` is now `123`); every PIN is flagged to be changed, because the old file kept them in plain text.
+8. **Finish setup as admin.** In PunchClock click **Admin** and sign in. Set the site time zone to the one the import used (shown in the import report). Deactivate the `migration` account with a reason such as "Cutover done", so nothing can import into this database again. Check that every employee is listed.
 
-9. **Retire the old app.** Delete its Desktop and Startup shortcuts and rename its folder to `PunchClock-v1-retired` so nobody starts it by habit; a punch there would be missing from v2. Keep the `.accdb` backup, the export zip and the printed reports for as long as payroll records must be kept where you are. The zip holds every old PIN in plain text, so store it on the USB stick, not on the shared PC, and delete both Desktop copies (the `legacy-export-<timestamp>` folder and its zip). A copy of the import report and manifest also stays in `C:\ProgramData\PunchClock\imports`.
+9. **Switch over.** Anyone still punched in at the export shows as punched in. PINs carry over, but the old app stored them as numbers, so a PIN that started with 0 lost that digit (`0123` is now `123`). Because the old file kept PINs in plain text, every imported employee is asked to choose a new PIN after their next punch.
+
+10. **Retire the old app.** Delete its Desktop and Startup shortcuts and rename its folder to `PunchClock-v1-retired` so nobody starts it by habit; a punch there would be missing from v2. Keep the `.accdb` backup, the export zip and the printed reports for as long as payroll records must be kept where you are. The zip holds every old PIN in plain text, so store it on the USB stick, not on the shared PC, and delete both Desktop copies (the `legacy-export-<timestamp>` folder and its zip). A copy of the import report and manifest also stays in `C:\ProgramData\PunchClock\imports`.
 
 What the import does with the old data, in short:
 
@@ -70,6 +75,8 @@ What the import does with the old data, in short:
 - Skipped, with the raw row kept and the reason recorded: the zero-length shift the old app added for every new employee, shifts whose employee no longer exists (the old report never counted them either), and shifts with no punch-in time.
 - Imported and flagged for a manager to fix through the new app's audited corrections: missed punch-outs, punch-outs before punch-ins, shifts over 16 hours, overlaps, rows added out of order (a sign of hand edits in Access).
 - The whole import is one audited event as the `migration` account, carrying the old file's SHA-256 and row counts. It is all or nothing, it refuses to run twice, and it refuses a database that already has employees or punches.
+
+What it does not protect against yet: anyone who can sign in to the PC can copy, replace or script-edit `C:\ProgramData\PunchClock\punchclock.db` (every Windows account needs write access so it can punch). The audit chain makes edits detectable, but the app does not yet run its tamper checks or save checkpoints, and only a fingerprint kept off the PC, like the *Audit log head* on the printed import report, catches someone rewriting the whole file. Keep that printout, and back up the database regularly to a drive you keep elsewhere.
 
 From a command prompt, the same importer runs unattended:
 

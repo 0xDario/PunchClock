@@ -1,7 +1,9 @@
 using System.Windows;
+using PunchClock.Core.Accounts;
 using PunchClock.Core.Employees;
 using PunchClock.Core.Punches;
 using PunchClock.Core.Security;
+using PunchClock.Core.Site;
 using PunchClock.Data.Sqlite;
 
 namespace PunchClock.App;
@@ -18,15 +20,18 @@ public partial class App : Application
 
             var store = new SqlitePunchClockStore(database);
             var hasher = new Pbkdf2PinHasher();
-            var employees = new EmployeeService(store, hasher, TimeProvider.System);
-            var punches = new PunchService(store, hasher, TimeProvider.System);
+            var services = new AppServices(
+                new EmployeeService(store, hasher),
+                new PunchService(store, hasher, TimeProvider.System),
+                new AccountService(store, hasher),
+                new SiteSettingsService(store));
 
 #if DEBUG
-            await DemoData.SeedIfEmptyAsync(employees);
+            await DemoData.SeedIfEmptyAsync(services.Employees);
 #endif
 
-            var viewModel = new MainViewModel(employees, punches, TimeProvider.System);
-            MainWindow = new MainWindow(viewModel);
+            var viewModel = new MainViewModel(services.Employees, services.Punches, TimeProvider.System);
+            MainWindow = new MainWindow(viewModel, services);
             MainWindow.Show();
             await viewModel.LoadAsync();
         }
@@ -42,3 +47,9 @@ public partial class App : Application
         }
     }
 }
+
+public sealed record AppServices(
+    EmployeeService Employees,
+    PunchService Punches,
+    AccountService Accounts,
+    SiteSettingsService Site);

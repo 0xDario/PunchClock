@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using PunchClock.Core.Security;
 using PunchClock.Migration.Analysis;
+using PunchClock.Data.Sqlite;
 using PunchClock.Migration.Database;
 using PunchClock.Migration.Export;
 
@@ -22,7 +23,7 @@ public sealed class LegacyImporterTests : IAsyncLifetime
         await _db.DisposeAsync();
     }
 
-    static LegacyImporter Importer() => new(FastHasher, "tests", "PunchClock.Import/test");
+    static LegacyImporter Importer() => new(FastHasher, "PunchClock.Import/test");
 
     ImportPlan Plan()
     {
@@ -44,7 +45,7 @@ public sealed class LegacyImporterTests : IAsyncLifetime
     {
         var plan = Plan();
 
-        var outcome = await Importer().ImportAsync(plan, _db.Path);
+        var outcome = await Importer().ImportAsync(plan, _db.Database);
 
         Assert.Equal(5, outcome.PunchesWritten);
         Assert.Equal(3L, await _db.ScalarAsync("SELECT count(*) FROM employee WHERE pin_must_change = 1 AND legacy_id IN (14, 15, 16)"));
@@ -78,7 +79,7 @@ public sealed class LegacyImporterTests : IAsyncLifetime
     [Fact]
     public async Task Imported_pins_still_verify_and_shifts_keep_their_real_duration()
     {
-        await Importer().ImportAsync(Plan(), _db.Path);
+        await Importer().ImportAsync(Plan(), _db.Database);
 
         var hash = (string)(await _db.ScalarAsync("SELECT pin_hash FROM employee WHERE legacy_id = 14"))!;
         Assert.True(FastHasher.Verify("123123", hash));
@@ -94,9 +95,9 @@ public sealed class LegacyImporterTests : IAsyncLifetime
     public async Task Refuses_to_import_twice()
     {
         var plan = Plan();
-        await Importer().ImportAsync(plan, _db.Path);
+        await Importer().ImportAsync(plan, _db.Database);
 
-        var ex = await Assert.ThrowsAsync<ImportRefusedException>(() => Importer().ImportAsync(plan, _db.Path));
+        var ex = await Assert.ThrowsAsync<ImportRefusedException>(() => Importer().ImportAsync(plan, _db.Database));
         Assert.Contains("already imported", ex.Message);
     }
 
@@ -112,7 +113,7 @@ public sealed class LegacyImporterTests : IAsyncLifetime
             await cmd.ExecuteNonQueryAsync();
         }
 
-        var ex = await Assert.ThrowsAsync<ImportRefusedException>(() => Importer().ImportAsync(Plan(), path));
+        var ex = await Assert.ThrowsAsync<ImportRefusedException>(() => Importer().ImportAsync(Plan(), new SqliteDatabase(path)));
         Assert.Contains("audit schema", ex.Message);
     }
 
@@ -133,7 +134,7 @@ public sealed class LegacyImporterTests : IAsyncLifetime
             Totals = plan.Totals with { ByEmployee = plan.Totals.ByEmployee.Select(e => e with { Elapsed = e.Elapsed + TimeSpan.FromSeconds(1) }).ToList() },
         };
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => Importer().ImportAsync(bad, _db.Path));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Importer().ImportAsync(bad, _db.Database));
 
         Assert.Equal(before, await _db.ScalarAsync("SELECT max(seq) FROM audit_log"));
         Assert.Equal(0L, await _db.ScalarAsync("SELECT count(*) FROM import_batch"));

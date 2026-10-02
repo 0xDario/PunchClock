@@ -1,36 +1,19 @@
 using Microsoft.Data.Sqlite;
-using PunchClock.Migration.Database;
+using PunchClock.Data.Sqlite;
 
 namespace PunchClock.Migration.Tests;
 
-/// <summary>A temp SQLite file with docs/database/schema.sql applied, as the app will create it.</summary>
+/// <summary>A temp SQLite file with the app's migrations (the audit schema) applied.</summary>
 public sealed class AuditSchemaDatabase : IAsyncLifetime
 {
     readonly string _directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "punchclock-migration-tests", Guid.NewGuid().ToString("N"));
 
     public string Path => System.IO.Path.Combine(_directory, "punchclock.db");
 
-    public async ValueTask InitializeAsync()
-    {
-        Directory.CreateDirectory(_directory);
-        var schema = await File.ReadAllTextAsync(System.IO.Path.Combine(AppContext.BaseDirectory, "schema.sql"));
+    /// <summary>Created and migrated exactly as the app and the importer do it.</summary>
+    public SqliteDatabase Database { get; private set; } = null!;
 
-        await using (var create = new SqliteConnection($"Data Source={Path};Pooling=False"))
-        {
-            await create.OpenAsync();
-            await using var wal = create.CreateCommand();
-            wal.CommandText = "PRAGMA journal_mode = WAL;";
-            await wal.ExecuteNonQueryAsync();
-        }
-
-        await using var c = await AuditedConnection.OpenAsync(Path, "user", 1, "tests", "schema", default);
-        await using var tx = c.BeginTransaction();
-        await using var cmd = c.CreateCommand();
-        cmd.Transaction = tx;
-        cmd.CommandText = schema;
-        await cmd.ExecuteNonQueryAsync();
-        await tx.CommitAsync();
-    }
+    public async ValueTask InitializeAsync() => Database = await PunchClockDatabase.OpenAndMigrateAsync(Path);
 
     public async Task<object?> ScalarAsync(string sql)
     {
