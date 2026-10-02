@@ -1,0 +1,23 @@
+<Window x:Class="PunchClock.App.AdminSetupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Create the admin account" Width="400" SizeToContent="Height" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" FontSize="15">
+    <StackPanel Margin="24">
+        <TextBlock TextWrapping="Wrap" Margin="0,0,0,16"
+                   Text="No admin account exists yet. The account created here can set the site time zone, manage staff and deactivate other accounts." />
+        <Label Content="_Your name" Target="{Binding ElementName=DisplayName}" Padding="0,0,0,4" />
+        <TextBox x:Name="DisplayName" Padding="6" Margin="0,0,0,12" />
+        <Label Content="_Username" Target="{Binding ElementName=Username}" Padding="0,0,0,4" />
+        <TextBox x:Name="Username" Padding="6" Margin="0,0,0,12" />
+        <Label Content="_Password (10+ characters)" Target="{Binding ElementName=Password}" Padding="0,0,0,4" />
+        <PasswordBox x:Name="Password" Padding="6" Margin="0,0,0,12" />
+        <Label Content="_Repeat password" Target="{Binding ElementName=RepeatPassword}" Padding="0,0,0,4" />
+        <PasswordBox x:Name="RepeatPassword" Padding="6" />
+        <TextBlock x:Name="Error" Foreground="#C62828" TextWrapping="Wrap" Margin="0,12,0,0" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Content="Cancel" IsCancel="True" Padding="14,6" Margin="0,0,8,0" />
+            <Button x:Name="CreateButton" Content="_Create admin" IsDefault="True" Click="Create_Click" Padding="14,6" />
+        </StackPanel>
+    </StackPanel>
+</Window>

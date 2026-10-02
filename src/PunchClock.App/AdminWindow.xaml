@@ -1,0 +1,85 @@
+<Window x:Class="PunchClock.App.AdminWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="PunchClock administration" Width="720" Height="560" MinWidth="560" MinHeight="420"
+        WindowStartupLocation="CenterOwner" FontSize="14">
+    <DockPanel Margin="16">
+        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+            <Button DockPanel.Dock="Right" Content="Sign _out" Click="SignOut_Click" Padding="12,4" />
+            <TextBlock x:Name="SignedInAs" VerticalAlignment="Center" />
+        </DockPanel>
+        <TextBlock x:Name="Status" DockPanel.Dock="Bottom" TextWrapping="Wrap" Margin="0,12,0,0" />
+
+        <TabControl>
+            <TabItem Header="_Site">
+                <StackPanel Margin="16">
+                    <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
+                               Text="Punches store UTC plus this zone's offset at the moment of the punch. Changing the zone affects new punches only." />
+                    <Label Content="Site _time zone" Target="{Binding ElementName=TimeZoneBox}" Padding="0,0,0,4" />
+                    <ComboBox x:Name="TimeZoneBox" DisplayMemberPath="DisplayName" SelectedValuePath="Id" Padding="6" />
+                    <TextBlock x:Name="CurrentZone" Foreground="Gray" Margin="0,6,0,0" />
+                    <Button Content="Save _time zone" Click="SaveTimeZone_Click" HorizontalAlignment="Left" Padding="12,4" Margin="0,12,0,0" />
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="_Accounts">
+                <DockPanel Margin="16">
+                    <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+                        <Label Content="_Reason (kept in the audit log)" Target="{Binding ElementName=AccountReason}" Padding="0,0,0,4" />
+                        <TextBox x:Name="AccountReason" Padding="6" Text="Legacy import finished" />
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <Button Content="_Deactivate" Click="DeactivateAccount_Click" Padding="12,4" Margin="0,0,8,0" />
+                            <Button Content="Re_activate" Click="ActivateAccount_Click" Padding="12,4" />
+                        </StackPanel>
+                    </StackPanel>
+                    <ListView x:Name="AccountList">
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Header="Username" DisplayMemberBinding="{Binding Username}" Width="160" />
+                                <GridViewColumn Header="Name" DisplayMemberBinding="{Binding DisplayName}" Width="200" />
+                                <GridViewColumn Header="Role" DisplayMemberBinding="{Binding Role}" Width="100" />
+                                <GridViewColumn Header="Active" DisplayMemberBinding="{Binding IsActive}" Width="70" />
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+                </DockPanel>
+            </TabItem>
+
+            <TabItem Header="_Employees">
+                <DockPanel Margin="16">
+                    <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <Button Content="_Deactivate" Click="DeactivateEmployee_Click" Padding="12,4" Margin="0,0,8,0" />
+                            <Button Content="Re_activate" Click="ActivateEmployee_Click" Padding="12,4" />
+                        </StackPanel>
+                        <TextBlock Text="Add employee" FontWeight="SemiBold" Margin="0,8,0,4" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="110" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="NewFirstName" Grid.Column="0" Padding="6" Margin="0,0,8,0" ToolTip="First name" />
+                            <TextBox x:Name="NewLastName" Grid.Column="1" Padding="6" Margin="0,0,8,0" ToolTip="Last name" />
+                            <PasswordBox x:Name="NewPin" Grid.Column="2" MaxLength="6" Padding="6" Margin="0,0,8,0" ToolTip="Starting PIN (3-6 digits)"
+                                         PreviewTextInput="Pin_PreviewTextInput" DataObject.Pasting="Pin_Pasting" />
+                            <Button Grid.Column="3" Content="Add" Click="AddEmployee_Click" Padding="12,4" />
+                        </Grid>
+                        <TextBlock Foreground="Gray" Text="First name, last name, starting PIN." Margin="0,4,0,0" />
+                    </StackPanel>
+                    <ListView x:Name="EmployeeList">
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Header="Name" DisplayMemberBinding="{Binding DisplayName}" Width="240" />
+                                <GridViewColumn Header="Active" DisplayMemberBinding="{Binding IsActive}" Width="70" />
+                                <GridViewColumn Header="PIN reset due" DisplayMemberBinding="{Binding PinMustChange}" Width="110" />
+                                <GridViewColumn Header="Legacy ID" DisplayMemberBinding="{Binding LegacyId}" Width="90" />
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+                </DockPanel>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>

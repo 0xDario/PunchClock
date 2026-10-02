@@ -1,3 +1,5 @@
+using PunchClock.Core.Accounts;
+using PunchClock.Core.Audit;
 using PunchClock.Core.Employees;
 using PunchClock.Core.Punches;
 
@@ -14,23 +16,48 @@ public interface IPunchClockStore
 }
 
 /// <summary>
-/// One database transaction. All writes funnel through here, which gives the audit log
-/// (designed separately) a single place to record each change in the same transaction.
+/// One database transaction. Reads need no actor. Every write requires <see cref="ActAs"/> first:
+/// the database's audit triggers attribute each change to that actor, check that the actor is
+/// allowed to make it, and reject the write outright when no actor is set.
 /// </summary>
 public interface IPunchClockUnitOfWork : IAsyncDisposable
 {
+    /// <summary>Sets who subsequent writes are attributed to, and an optional reason stored with them.</summary>
+    void ActAs(AuditActor actor, string? reason = null);
+
+    Task RecordEventAsync(AuditEvent auditEvent, string? detailJson = null, CancellationToken ct = default);
+
+    Task<string?> GetSettingAsync(string key, CancellationToken ct = default);
+
+    Task SetSettingAsync(string key, string value, CancellationToken ct = default);
+
     Task<Employee?> FindEmployeeAsync(long employeeId, CancellationToken ct = default);
 
     Task<IReadOnlyList<Employee>> ListEmployeesAsync(bool activeOnly, CancellationToken ct = default);
 
     Task<long> AddEmployeeAsync(NewEmployee employee, CancellationToken ct = default);
 
+    /// <summary>Sets a new PIN hash and clears <see cref="Employee.PinMustChange"/>.</summary>
     Task SetPinHashAsync(long employeeId, string pinHash, CancellationToken ct = default);
 
-    /// <summary>Latest punch by <see cref="Punch.OccurredAtUtc"/>, ties broken by insertion order.</summary>
+    Task SetEmployeeActiveAsync(long employeeId, bool isActive, CancellationToken ct = default);
+
+    /// <summary>Latest effective (not superseded) punch by time, ties broken by insertion order.</summary>
     Task<Punch?> FindLatestPunchAsync(long employeeId, CancellationToken ct = default);
 
-    Task<Punch> AppendPunchAsync(NewPunch punch, CancellationToken ct = default);
+    Task<Punch> AppendKioskPunchAsync(long employeeId, PunchDirection direction, DateTimeOffset occurredAtUtc, int utcOffsetMinutes, CancellationToken ct = default);
+
+    Task<long> AddCorrectionAsync(NewCorrection correction, CancellationToken ct = default);
+
+    Task<AppUser?> FindUserAsync(long userId, CancellationToken ct = default);
+
+    Task<AppUser?> FindUserByUsernameAsync(string username, CancellationToken ct = default);
+
+    Task<IReadOnlyList<AppUser>> ListUsersAsync(CancellationToken ct = default);
+
+    Task<long> AddUserAsync(NewAppUser user, CancellationToken ct = default);
+
+    Task SetUserActiveAsync(long userId, bool isActive, CancellationToken ct = default);
 
     Task CommitAsync(CancellationToken ct = default);
 }
