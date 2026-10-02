@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
+using PunchClock.Core.Audit;
 
 namespace PunchClock.Data.Sqlite;
 
@@ -18,7 +19,9 @@ public sealed class SchemaMismatchException(string message) : Exception(message)
 
 /// <summary>
 /// Applies the embedded <c>Migrations/NNNN_name.sql</c> scripts that the database has not seen,
-/// in order, and records each with its checksum in <c>schema_migration</c>.
+/// in order, as the system account, and records each with its checksum in <c>schema_migrations</c>
+/// (excluded from the schema fingerprint, not itself audited) plus a sealed <c>SCHEMA_MIGRATE</c>
+/// audit event carrying that checksum and the resulting schema fingerprint.
 /// Forward-only: an applied script that was later edited, or a database migrated by a newer
 /// build, stops startup with <see cref="SchemaMismatchException"/>.
 /// </summary>
@@ -53,7 +56,8 @@ public sealed partial class SchemaMigrator
     /// <returns>The versions applied by this call; empty when already current.</returns>
     public async Task<IReadOnlyList<int>> MigrateAsync(CancellationToken ct = default)
     {
-        await using var connection = await _database.OpenAsync(ct);
+        var context = new AuditContext(_database.Client, AuditActor.System, "schema migration");
+        await using var connection = await _database.OpenAsync(context, ct);
         EnsureSupportedEngine(connection.ServerVersion);
 
         // WAL lets readers proceed while a punch is being written. It is persistent, and
@@ -66,7 +70,7 @@ public sealed partial class SchemaMigrator
         await using var transaction = connection.BeginTransaction(deferred: false);
 
         await ExecuteAsync(connection, transaction, """
-            CREATE TABLE IF NOT EXISTS schema_migration (
+            CREATE TABLE IF NOT EXISTS schema_migrations (
                 version        INTEGER PRIMARY KEY,
                 name           TEXT NOT NULL,
                 checksum       TEXT NOT NULL,
@@ -95,7 +99,7 @@ public sealed partial class SchemaMigrator
             await using var record = connection.CreateCommand();
             record.Transaction = transaction;
             record.CommandText = """
-                INSERT INTO schema_migration (version, name, checksum, applied_at_utc)
+                INSERT INTO schema_migrations (version, name, checksum, applied_at_utc)
                 VALUES ($version, $name, $checksum, $at);
                 """;
             record.Parameters.AddWithValue("$version", migration.Version);
@@ -103,6 +107,20 @@ public sealed partial class SchemaMigrator
             record.Parameters.AddWithValue("$checksum", migration.Checksum);
             record.Parameters.AddWithValue("$at", SqliteTime.ToText(DateTimeOffset.UtcNow));
             await record.ExecuteNonQueryAsync(ct);
+
+            await using var audit = connection.CreateCommand();
+            audit.Transaction = transaction;
+            audit.CommandText = """
+                INSERT INTO audit_log (actor_kind, actor_id, client, action, after_json, reason)
+                SELECT pc_ctx('actor_kind'), pc_ctx('actor_id'), pc_ctx('client'), 'SCHEMA_MIGRATE',
+                       json_object('version', $version, 'name', $name, 'checksum', $checksum,
+                                   'schema_fingerprint', (SELECT fingerprint FROM schema_fingerprint_v)),
+                       pc_ctx('reason');
+                """;
+            audit.Parameters.AddWithValue("$version", migration.Version);
+            audit.Parameters.AddWithValue("$name", migration.Name);
+            audit.Parameters.AddWithValue("$checksum", migration.Checksum);
+            await audit.ExecuteNonQueryAsync(ct);
             newlyApplied.Add(migration.Version);
         }
 
@@ -144,7 +162,7 @@ public sealed partial class SchemaMigrator
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT version, checksum FROM schema_migration;";
+        command.CommandText = "SELECT version, checksum FROM schema_migrations;";
         await using var reader = await command.ExecuteReaderAsync(ct);
         var applied = new Dictionary<int, string>();
         while (await reader.ReadAsync(ct))

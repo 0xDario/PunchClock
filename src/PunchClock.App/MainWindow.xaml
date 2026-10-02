@@ -11,6 +11,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0" Text="{Binding Clock}" FontSize="56" FontWeight="SemiBold" HorizontalAlignment="Center" />
@@ -46,5 +47,8 @@
                 </Style>
             </TextBlock.Style>
         </TextBlock>
+
+        <Button Grid.Row="6" Content="_Admin" Click="Admin_Click" HorizontalAlignment="Right"
+                Padding="10,4" FontSize="13" Background="Transparent" BorderBrush="LightGray" />
     </Grid>
 </Window>

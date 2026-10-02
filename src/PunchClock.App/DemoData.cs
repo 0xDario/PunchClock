@@ -1,4 +1,5 @@
 #if DEBUG
+using PunchClock.Core.Audit;
 using PunchClock.Core.Employees;
 
 namespace PunchClock.App;
@@ -8,13 +9,13 @@ internal static class DemoData
 {
     public static async Task SeedIfEmptyAsync(EmployeeService employees)
     {
-        if ((await employees.ListActiveAsync()).Count > 0)
+        if ((await employees.ListAsync(activeOnly: false)).Count > 0)
         {
             return;
         }
 
-        await employees.CreateAsync("Demo", "Employee", "1234");
-        await employees.CreateAsync("Second", "Tester", "0042");
+        await employees.CreateAsync(AuditActor.System, "Demo", "Employee", "1234");
+        await employees.CreateAsync(AuditActor.System, "Second", "Tester", "0042");
     }
 }
 #endif
