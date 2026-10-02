@@ -91,8 +91,8 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("Importing...");
         var database = await PunchClockDatabase.OpenAndMigrateAsync(o.DatabasePath);
-        var importer = new LegacyImporter(new Pbkdf2PinHasher(), $"{Environment.MachineName} PunchClock.Import {Version}", $"PunchClock.Import {Version}");
-        var outcome = await importer.ImportAsync(plan, database.Path);
+        var importer = new LegacyImporter(new Pbkdf2PinHasher(), $"PunchClock.Import {Version}");
+        var outcome = await importer.ImportAsync(plan, database);
 
         // Keep the evidence next to the database, where backups of it will pick it up.
         var stamp = outcome.ImportedAtUtc.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);

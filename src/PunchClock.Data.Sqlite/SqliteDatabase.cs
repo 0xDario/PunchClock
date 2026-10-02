@@ -1,16 +1,22 @@
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Data.Sqlite;
 
 namespace PunchClock.Data.Sqlite;
 
-/// <summary>Opens configured connections to one SQLite file.</summary>
+/// <summary>
+/// Opens connections to one SQLite file, configured the way the audit schema requires:
+/// <c>pc_sha256</c> and <c>pc_ctx</c> registered, foreign keys on, trusted schema on.
+/// </summary>
 public sealed class SqliteDatabase
 {
     private readonly string _connectionString;
 
-    public SqliteDatabase(string path)
+    public SqliteDatabase(string path, string? client = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         Path = System.IO.Path.GetFullPath(path);
+        Client = client ?? AuditContext.DefaultClient;
         _connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = Path,
@@ -25,15 +31,37 @@ public sealed class SqliteDatabase
 
     public string Path { get; }
 
-    public async Task<SqliteConnection> OpenAsync(CancellationToken ct = default)
+    /// <summary>Recorded as <c>client</c> in every audit row written through this database.</summary>
+    public string Client { get; }
+
+    /// <summary>A new audit context for this database's client.</summary>
+    public AuditContext CreateContext() => new(Client);
+
+    /// <summary>
+    /// Opens a connection whose writes are attributed through <paramref name="context"/>. Without a
+    /// context (or with no actor set on it) the connection can read everything and write nothing.
+    /// </summary>
+    public async Task<SqliteConnection> OpenAsync(AuditContext? context = null, CancellationToken ct = default)
     {
+        context ??= CreateContext();
         var connection = new SqliteConnection(_connectionString);
         try
         {
             await connection.OpenAsync(ct);
+
+            connection.CreateFunction("pc_sha256", (string? text) => Sha256Hex(text), isDeterministic: true);
+            connection.CreateFunction("pc_ctx", (string name) => context.Get(name));
+
             await using var pragma = connection.CreateCommand();
-            // synchronous=FULL: a committed punch survives power loss, at a cost a kiosk never notices.
-            pragma.CommandText = "PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL;";
+            // trusted_schema = ON: the schema's triggers and views call the two functions above;
+            //   with it off SQLite refuses them ("unsafe use of pc_sha256()") and every write fails.
+            // synchronous = FULL: a committed punch survives power loss.
+            pragma.CommandText = """
+                PRAGMA foreign_keys = ON;
+                PRAGMA synchronous = FULL;
+                PRAGMA busy_timeout = 5000;
+                PRAGMA trusted_schema = ON;
+                """;
             await pragma.ExecuteNonQueryAsync(ct);
             return connection;
         }
@@ -43,4 +71,7 @@ public sealed class SqliteDatabase
             throw;
         }
     }
+
+    internal static string? Sha256Hex(string? text) =>
+        text is null ? null : Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
 }

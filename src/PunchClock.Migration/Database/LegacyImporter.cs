@@ -3,7 +3,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using PunchClock.Core.Audit;
 using PunchClock.Core.Security;
+using PunchClock.Data.Sqlite;
 using PunchClock.Migration.Analysis;
 using PunchClock.Migration.Reporting;
 
@@ -13,32 +15,27 @@ public sealed class ImportRefusedException(string message) : Exception(message);
 
 /// <summary>
 /// Writes an <see cref="ImportPlan"/> into a database that carries the audit
-/// schema (docs/database/schema.sql), following its section 9: one transaction
+/// schema (docs/database/schema.sql, shipped as migration 0001_audit_schema.sql), following its section 9: one transaction
 /// as the <c>migration</c> account, raw legacy rows kept as evidence, every
 /// anomaly in <c>migration_issue</c>, and the batch closed only when the
 /// database reconciles with the plan. Any mismatch rolls everything back.
 /// </summary>
 public sealed class LegacyImporter
 {
-    /// <summary><c>app_user.id</c> of the seeded migration account.</summary>
-    public const long MigrationUserId = 2;
-
-    const string UtcFormat = "yyyy-MM-dd'T'HH:mm:ss.fff'Z'";
-
     readonly IPinHasher _hasher;
-    readonly string _client;
     readonly string _toolVersion;
 
-    public LegacyImporter(IPinHasher hasher, string client, string toolVersion)
+    public LegacyImporter(IPinHasher hasher, string toolVersion)
     {
         _hasher = hasher;
-        _client = client;
         _toolVersion = toolVersion;
     }
 
-    public async Task<ImportOutcome> ImportAsync(ImportPlan plan, string databasePath, CancellationToken ct = default)
+    /// <param name="database">Already migrated, e.g. by <see cref="PunchClockDatabase.OpenAndMigrateAsync"/>.</param>
+    public async Task<ImportOutcome> ImportAsync(ImportPlan plan, SqliteDatabase database, CancellationToken ct = default)
     {
-        await using var connection = await AuditedConnection.OpenAsync(databasePath, "user", MigrationUserId, _client, "Legacy Access import", ct);
+        var context = new AuditContext(database.Client, AuditActor.Migration, "Legacy Access import");
+        await using var connection = await database.OpenAsync(context, ct);
         await using var tx = connection.BeginTransaction(deferred: false);
 
         await CheckTargetAsync(connection, tx, ct);
@@ -140,7 +137,7 @@ public sealed class LegacyImporter
             CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal);
 
         await tx.CommitAsync(ct);
-        return new ImportOutcome(Path.GetFullPath(databasePath), batchId, importedAt, punches, seq, hash);
+        return new ImportOutcome(database.Path, batchId, importedAt, punches, seq, hash);
     }
 
     static Export.ManifestTable Table(ImportPlan plan, string name) =>
@@ -155,7 +152,7 @@ public sealed class LegacyImporter
             throw new ImportRefusedException("This database does not have the audit schema the importer writes to. The importer and the app must come from the same release.");
 
         var migration = await ScalarAsync(c, tx,
-            "SELECT is_active FROM app_user WHERE id = $id AND role = 'migration'", ct, ("$id", MigrationUserId));
+            "SELECT is_active FROM app_user WHERE id = $id AND role = 'migration'", ct, ("$id", AuditActor.Migration.Id));
         if (migration is not 1L)
             throw new ImportRefusedException("The migration account is missing or deactivated, so this database has already been through its cutover.");
 
@@ -226,7 +223,7 @@ public sealed class LegacyImporter
             INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source, import_batch_id, legacy_shift_id)
             VALUES ($emp, $dir, $utc, $offset, 'legacy_import', $batch, $shift)
             """, ct,
-            ("$emp", employeeId), ("$dir", direction), ("$utc", t.Utc.ToString(UtcFormat, CultureInfo.InvariantCulture)),
+            ("$emp", employeeId), ("$dir", direction), ("$utc", SqliteTime.ToText(new DateTimeOffset(t.Utc))),
             ("$offset", t.UtcOffsetMinutes), ("$batch", batchId), ("$shift", legacyShiftId));
 
     static Task IssueAsync(SqliteConnection c, SqliteTransaction tx, long batchId, string table, long pk, string code, Disposition disposition, Dictionary<string, object?> detail, CancellationToken ct) =>
@@ -279,52 +276,5 @@ public sealed class LegacyImporter
         foreach (var (name, value) in args)
             cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
         return cmd;
-    }
-}
-
-/// <summary>
-/// A connection set up the way docs/database/schema.sql requires: the two
-/// app functions every audited write calls, and the per-connection pragmas.
-/// </summary>
-/// <remarks>
-/// Belongs in PunchClock.Data.Sqlite once the app adopts the audit schema;
-/// it lives here until then so the importer can be tested against schema.sql.
-/// </remarks>
-public static class AuditedConnection
-{
-    public static async Task<SqliteConnection> OpenAsync(string path, string actorKind, long actorId, string client, string? reason, CancellationToken ct = default)
-    {
-        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
-        {
-            DataSource = path,
-            Mode = SqliteOpenMode.ReadWrite,
-            Pooling = false,
-            DefaultTimeout = 30,
-        }.ToString());
-
-        try
-        {
-            await connection.OpenAsync(ct);
-            connection.CreateFunction("pc_sha256", (string? s) =>
-                s is null ? null : Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(s))), isDeterministic: true);
-            connection.CreateFunction("pc_ctx", (string name) => name switch
-            {
-                "actor_kind" => (object)actorKind,
-                "actor_id" => actorId,
-                "client" => client,
-                "reason" => reason,
-                _ => throw new InvalidOperationException($"pc_ctx: unknown key '{name}'"),
-            });
-
-            await using var pragma = connection.CreateCommand();
-            pragma.CommandText = "PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL; PRAGMA trusted_schema = ON;";
-            await pragma.ExecuteNonQueryAsync(ct);
-            return connection;
-        }
-        catch
-        {
-            await connection.DisposeAsync();
-            throw;
-        }
     }
 }
