@@ -1,0 +1,335 @@
+using Microsoft.Data.Sqlite;
+using PunchClock.Core.Accounts;
+using PunchClock.Core.Audit;
+using PunchClock.Core.Employees;
+using PunchClock.Core.Persistence;
+using PunchClock.Core.Punches;
+
+namespace PunchClock.Data.Sqlite;
+
+public sealed class SqlitePunchClockStore(SqliteDatabase database) : IPunchClockStore
+{
+    public async Task<IPunchClockUnitOfWork> BeginAsync(CancellationToken ct = default)
+    {
+        var context = database.CreateContext();
+        var connection = await database.OpenAsync(context, ct);
+        try
+        {
+            // BEGIN IMMEDIATE: take the write lock up front so a read-check-insert sequence
+            // cannot interleave with another writer. Contention waits up to DefaultTimeout.
+            var transaction = connection.BeginTransaction(deferred: false);
+            return new SqliteUnitOfWork(connection, transaction, context);
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
+    }
+}
+
+internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransaction transaction, AuditContext context)
+    : IPunchClockUnitOfWork
+{
+    private const string EmployeeColumns = "id, first_name, last_name, is_active, pin_hash, pin_must_change, legacy_id";
+    private const string PunchColumns = "id, employee_id, direction, occurred_utc, utc_offset_minutes, recorded_utc, source";
+    private const string UserColumns = "id, username, display_name, role, is_active, password_hash, employee_id";
+
+    private bool _completed;
+
+    public void ActAs(AuditActor actor, string? reason = null)
+    {
+        context.Actor = actor;
+        context.Reason = reason;
+    }
+
+    public async Task RecordEventAsync(AuditEvent auditEvent, string? detailJson = null, CancellationToken ct = default)
+    {
+        await using var command = Command("""
+            INSERT INTO audit_log (actor_kind, actor_id, client, action, after_json, reason)
+            VALUES (pc_ctx('actor_kind'), pc_ctx('actor_id'), pc_ctx('client'), $action, $detail, pc_ctx('reason'));
+            """);
+        command.Parameters.AddWithValue("$action", auditEvent switch
+        {
+            AuditEvent.AuthLogin => "AUTH_LOGIN",
+            AuditEvent.AuthLoginFailed => "AUTH_LOGIN_FAILED",
+            AuditEvent.AuthLogout => "AUTH_LOGOUT",
+            AuditEvent.AuthPinFailed => "AUTH_PIN_FAILED",
+            AuditEvent.AppStart => "APP_START",
+            _ => throw new ArgumentOutOfRangeException(nameof(auditEvent), auditEvent, null),
+        });
+        command.Parameters.AddWithValue("$detail", (object?)detailJson ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<string?> GetSettingAsync(string key, CancellationToken ct = default)
+    {
+        await using var command = Command("SELECT value FROM site_setting WHERE key = $key;");
+        command.Parameters.AddWithValue("$key", key);
+        return (string?)await command.ExecuteScalarAsync(ct);
+    }
+
+    public async Task SetSettingAsync(string key, string value, CancellationToken ct = default)
+    {
+        await using var command = Command("""
+            INSERT INTO site_setting (key, value) VALUES ($key, $value)
+            ON CONFLICT (key) DO UPDATE SET value = excluded.value WHERE value IS NOT excluded.value;
+            """);
+        command.Parameters.AddWithValue("$key", key);
+        command.Parameters.AddWithValue("$value", value);
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<Employee?> FindEmployeeAsync(long employeeId, CancellationToken ct = default)
+    {
+        await using var command = Command($"SELECT {EmployeeColumns} FROM employee WHERE id = $id;");
+        command.Parameters.AddWithValue("$id", employeeId);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? MapEmployee(reader) : null;
+    }
+
+    public async Task<IReadOnlyList<Employee>> ListEmployeesAsync(bool activeOnly, CancellationToken ct = default)
+    {
+        await using var command = Command($"""
+            SELECT {EmployeeColumns} FROM employee
+            WHERE $all = 1 OR is_active = 1
+            ORDER BY last_name COLLATE NOCASE, first_name COLLATE NOCASE, id;
+            """);
+        command.Parameters.AddWithValue("$all", activeOnly ? 0 : 1);
+        return await ReadAllAsync(command, MapEmployee, ct);
+    }
+
+    public async Task<long> AddEmployeeAsync(NewEmployee employee, CancellationToken ct = default)
+    {
+        await using var command = Command("""
+            INSERT INTO employee (first_name, last_name, pin_hash)
+            VALUES ($first, $last, $pin)
+            RETURNING id;
+            """);
+        command.Parameters.AddWithValue("$first", employee.FirstName);
+        command.Parameters.AddWithValue("$last", employee.LastName);
+        command.Parameters.AddWithValue("$pin", employee.PinHash);
+        return (long)(await command.ExecuteScalarAsync(ct))!;
+    }
+
+    public async Task SetPinHashAsync(long employeeId, string pinHash, CancellationToken ct = default)
+    {
+        await using var command = Command("UPDATE employee SET pin_hash = $pin, pin_must_change = 0 WHERE id = $id;");
+        command.Parameters.AddWithValue("$pin", pinHash);
+        command.Parameters.AddWithValue("$id", employeeId);
+        await ExpectOneRowAsync(command, $"Employee {employeeId}", ct);
+    }
+
+    public async Task SetEmployeeActiveAsync(long employeeId, bool isActive, CancellationToken ct = default)
+    {
+        await using var command = Command("UPDATE employee SET is_active = $active WHERE id = $id;");
+        command.Parameters.AddWithValue("$active", isActive ? 1 : 0);
+        command.Parameters.AddWithValue("$id", employeeId);
+        await ExpectOneRowAsync(command, $"Employee {employeeId}", ct);
+    }
+
+    public async Task<Punch?> FindLatestPunchAsync(long employeeId, CancellationToken ct = default)
+    {
+        // Effective punches only: a punch superseded by a correction no longer counts.
+        await using var command = Command($"""
+            SELECT {PunchColumns} FROM punch_effective_v
+            WHERE employee_id = $id
+            ORDER BY occurred_utc DESC, id DESC
+            LIMIT 1;
+            """);
+        command.Parameters.AddWithValue("$id", employeeId);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? MapPunch(reader) : null;
+    }
+
+    public async Task<Punch> AppendKioskPunchAsync(
+        long employeeId, PunchDirection direction, DateTimeOffset occurredAtUtc, int utcOffsetMinutes, CancellationToken ct = default)
+    {
+        // recorded_utc is omitted on purpose: the schema fills it from the database clock and
+        // rejects a caller-supplied value.
+        await using var command = Command($"""
+            INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source)
+            VALUES ($employee, $direction, $occurred, $offset, 'kiosk')
+            RETURNING {PunchColumns};
+            """);
+        command.Parameters.AddWithValue("$employee", employeeId);
+        command.Parameters.AddWithValue("$direction", ToDb(direction));
+        command.Parameters.AddWithValue("$occurred", SqliteTime.ToText(occurredAtUtc));
+        command.Parameters.AddWithValue("$offset", utcOffsetMinutes);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        await reader.ReadAsync(ct);
+        return MapPunch(reader);
+    }
+
+    public async Task<long> AddCorrectionAsync(NewCorrection correction, CancellationToken ct = default)
+    {
+        await using var command = Command("""
+            INSERT INTO punch_correction (action, employee_id, target_punch_id, new_direction,
+                                          new_occurred_utc, new_utc_offset_minutes, reason, actor_user_id)
+            VALUES ($action, $employee, $target, $direction, $occurred, $offset, $reason, $actor)
+            RETURNING id;
+            """);
+        command.Parameters.AddWithValue("$action", correction.Action switch
+        {
+            CorrectionAction.Add => "add",
+            CorrectionAction.Adjust => "adjust",
+            CorrectionAction.Void => "void",
+            var other => throw new ArgumentOutOfRangeException(nameof(correction), other, null),
+        });
+        command.Parameters.AddWithValue("$employee", correction.EmployeeId);
+        command.Parameters.AddWithValue("$target", (object?)correction.TargetPunchId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$direction", correction.NewDirection is { } d ? ToDb(d) : DBNull.Value);
+        command.Parameters.AddWithValue("$occurred", correction.NewOccurredAtUtc is { } t ? SqliteTime.ToText(t) : DBNull.Value);
+        command.Parameters.AddWithValue("$offset", (object?)correction.NewUtcOffsetMinutes ?? DBNull.Value);
+        command.Parameters.AddWithValue("$reason", correction.Reason);
+        command.Parameters.AddWithValue("$actor", correction.ActorUserId);
+        return (long)(await command.ExecuteScalarAsync(ct))!;
+    }
+
+    public async Task<AppUser?> FindUserAsync(long userId, CancellationToken ct = default)
+    {
+        await using var command = Command($"SELECT {UserColumns} FROM app_user WHERE id = $id;");
+        command.Parameters.AddWithValue("$id", userId);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? MapUser(reader) : null;
+    }
+
+    public async Task<AppUser?> FindUserByUsernameAsync(string username, CancellationToken ct = default)
+    {
+        // username is COLLATE NOCASE in the schema.
+        await using var command = Command($"SELECT {UserColumns} FROM app_user WHERE username = $username;");
+        command.Parameters.AddWithValue("$username", username);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? MapUser(reader) : null;
+    }
+
+    public async Task<IReadOnlyList<AppUser>> ListUsersAsync(CancellationToken ct = default)
+    {
+        await using var command = Command($"SELECT {UserColumns} FROM app_user ORDER BY id;");
+        return await ReadAllAsync(command, MapUser, ct);
+    }
+
+    public async Task<long> AddUserAsync(NewAppUser user, CancellationToken ct = default)
+    {
+        // must_change_password = 0: the person setting the password is the person who will use it.
+        await using var command = Command("""
+            INSERT INTO app_user (username, display_name, role, password_hash, must_change_password)
+            VALUES ($username, $display, $role, $password, 0)
+            RETURNING id;
+            """);
+        command.Parameters.AddWithValue("$username", user.Username);
+        command.Parameters.AddWithValue("$display", user.DisplayName);
+        command.Parameters.AddWithValue("$role", user.Role switch
+        {
+            UserRole.Admin => "admin",
+            UserRole.Manager => "manager",
+            var other => throw new ArgumentOutOfRangeException(nameof(user), other, "Service accounts are created by the schema."),
+        });
+        command.Parameters.AddWithValue("$password", user.PasswordHash);
+        return (long)(await command.ExecuteScalarAsync(ct))!;
+    }
+
+    public async Task SetUserActiveAsync(long userId, bool isActive, CancellationToken ct = default)
+    {
+        await using var command = Command("UPDATE app_user SET is_active = $active WHERE id = $id;");
+        command.Parameters.AddWithValue("$active", isActive ? 1 : 0);
+        command.Parameters.AddWithValue("$id", userId);
+        await ExpectOneRowAsync(command, $"Account {userId}", ct);
+    }
+
+    public async Task CommitAsync(CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_completed, this);
+        await transaction.CommitAsync(ct);
+        _completed = true;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        // Disposing an uncommitted SqliteTransaction rolls it back.
+        await transaction.DisposeAsync();
+        await connection.DisposeAsync();
+        _completed = true;
+    }
+
+    private SqliteCommand Command(string sql)
+    {
+        ObjectDisposedException.ThrowIf(_completed, this);
+        var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        return command;
+    }
+
+    private static async Task ExpectOneRowAsync(SqliteCommand command, string what, CancellationToken ct)
+    {
+        if (await command.ExecuteNonQueryAsync(ct) != 1)
+        {
+            throw new InvalidOperationException($"{what} does not exist.");
+        }
+    }
+
+    private static async Task<IReadOnlyList<T>> ReadAllAsync<T>(SqliteCommand command, Func<SqliteDataReader, T> map, CancellationToken ct)
+    {
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        var rows = new List<T>();
+        while (await reader.ReadAsync(ct))
+        {
+            rows.Add(map(reader));
+        }
+
+        return rows;
+    }
+
+    private static Employee MapEmployee(SqliteDataReader reader) => new(
+        reader.GetInt64(0),
+        reader.GetString(1),
+        reader.GetString(2),
+        reader.GetInt64(3) == 1,
+        reader.GetString(4),
+        reader.GetInt64(5) == 1,
+        reader.IsDBNull(6) ? null : reader.GetInt64(6));
+
+    private static Punch MapPunch(SqliteDataReader reader) => new(
+        reader.GetInt64(0),
+        reader.GetInt64(1),
+        reader.GetString(2) switch
+        {
+            "IN" => PunchDirection.In,
+            "OUT" => PunchDirection.Out,
+            var other => throw new InvalidDataException($"Unknown punch direction '{other}'."),
+        },
+        SqliteTime.Parse(reader.GetString(3)),
+        reader.GetInt32(4),
+        SqliteTime.Parse(reader.GetString(5)),
+        reader.GetString(6) switch
+        {
+            "kiosk" => PunchSource.Kiosk,
+            "correction" => PunchSource.Correction,
+            "legacy_import" => PunchSource.LegacyImport,
+            var other => throw new InvalidDataException($"Unknown punch source '{other}'."),
+        });
+
+    private static AppUser MapUser(SqliteDataReader reader) => new(
+        reader.GetInt64(0),
+        reader.GetString(1),
+        reader.GetString(2),
+        reader.GetString(3) switch
+        {
+            "system" => UserRole.System,
+            "migration" => UserRole.Migration,
+            "admin" => UserRole.Admin,
+            "manager" => UserRole.Manager,
+            var other => throw new InvalidDataException($"Unknown role '{other}'."),
+        },
+        reader.GetInt64(4) == 1,
+        reader.IsDBNull(5) ? null : reader.GetString(5),
+        reader.IsDBNull(6) ? null : reader.GetInt64(6));
+
+    private static string ToDb(PunchDirection direction) => direction switch
+    {
+        PunchDirection.In => "IN",
+        PunchDirection.Out => "OUT",
+        _ => throw new ArgumentOutOfRangeException(nameof(direction), direction, null),
+    };
+}
