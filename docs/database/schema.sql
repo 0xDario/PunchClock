@@ -107,7 +107,7 @@ CREATE TABLE migration_issue (
   code            TEXT NOT NULL CHECK (code IN (
                     'DUMMY_SHIFT', 'OPEN_SHIFT', 'NULL_TIME_IN', 'NEGATIVE_DURATION', 'LONG_SHIFT',
                     'OVERLAPPING_SHIFT', 'DST_AMBIGUOUS', 'DST_INVALID', 'ORPHAN_EMPLOYEE',
-                    'NULL_NAME', 'PIN_RESET_REQUIRED')),
+                    'NULL_NAME', 'PIN_RESET_REQUIRED', 'OUT_OF_ORDER_ID', 'CROSSES_DST')),
   disposition     TEXT NOT NULL CHECK (disposition IN ('IMPORTED', 'IMPORTED_FLAGGED', 'SKIPPED')),
   detail_json     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(detail_json))
 ) STRICT;
