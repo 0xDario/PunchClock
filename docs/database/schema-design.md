@@ -176,7 +176,7 @@ Confidentiality is out of scope: anyone who copies the file can read it. If that
 
 ## 9. Legacy import
 
-Pairs with the exporter in `migration/legacy-export/` (PR #1): `Employee.csv`, `Shift.csv`, `manifest.json` with source SHA-256 and row counts. Runs once, on the target machine, as `pc_ctx` actor `('user', 2)`, the `migration` account, in one transaction so the import is complete or absent.
+Pairs with the exporter in `migration/legacy-export/` (PR #4): `Employee.csv`, `Shift.csv`, `manifest.json` with source SHA-256 and row counts. Runs once, on the target machine, as `pc_ctx` actor `('user', 2)`, the `migration` account, in one transaction so the import is complete or absent.
 
 1. Insert `import_batch` with source `.accdb` SHA-256, manifest SHA-256, manifest row counts, `source_time_zone_id`, tool version. **Its `INSERT` audit row is the single import event** the legal chain starts from: it carries the source hash and the counts.
 2. Copy every exported row into `legacy_employee_raw` / `legacy_shift_raw` (PIN replaced by its digit count).
