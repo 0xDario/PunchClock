@@ -7,24 +7,31 @@ namespace PunchClock.Migration.Export;
 public sealed class ExportFormatException(string message) : Exception(message);
 
 /// <summary>One Employee row exactly as the legacy exporter wrote it.</summary>
+/// <param name="IsActive">1 or 0; null when the export predates the column or the value is NULL.</param>
+/// <param name="IsActiveRaw">The stored value as an integer (Access True is -1), kept for the evidence table.</param>
 public sealed record LegacyEmployee(
     long EmployeeId,
     string? FirstName,
     string? LastName,
     string? PinCode,
     int? IsActive,
+    long? IsActiveRaw,
     int Line);
 
 /// <summary>
 /// One Shift row. Times are site-local wall clock with no zone, as the legacy
 /// app wrote them with <c>DateTime.Now</c>.
 /// </summary>
+/// <param name="Raw">The four timestamp fields exactly as exported, kept for the evidence table.</param>
 public sealed record LegacyShift(
     long ShiftId,
     long? EmployeeId,
     DateTime? TimeIn,
     DateTime? TimeOut,
+    RawShiftTimes Raw,
     int Line);
+
+public sealed record RawShiftTimes(string? TimeIn, string? TimeInOADate, string? TimeOut, string? TimeOutOADate);
 
 /// <summary>Access-computed aggregates for one column, from an export query independent of the row dump.</summary>
 public sealed record ColumnTotals(long NonNull, string? Sum, string? Min, string? Max);
@@ -264,6 +271,7 @@ public sealed class LegacyExport
         row["LastName"],
         row.Digits("PinCode"),
         row.Has("IsActive") ? row.Flag("IsActive") : null,
+        row.Has("IsActive") ? row.FlagRaw("IsActive") : null,
         row.Line);
 
     static LegacyShift ParseShift(Row row) => new(
@@ -271,6 +279,7 @@ public sealed class LegacyExport
         row.OptionalLong("EmployeeID"),
         row.Timestamp("TimeIn"),
         row.Timestamp("TimeOut"),
+        new RawShiftTimes(row["TimeIn"], row["TimeIn_OADate"], row["TimeOut"], row["TimeOut_OADate"]),
         row.Line);
 
     internal static string Sha256File(string path)
@@ -318,12 +327,19 @@ public sealed class LegacyExport
         }
 
         /// <summary>An Access Yes/No (<c>true</c>/<c>false</c>) or integer flag, as 1/0. Access stores True as -1.</summary>
-        public int? Flag(string column) => this[column] switch
+        public int? Flag(string column) => FlagRaw(column) switch
         {
             null => null,
-            "true" or "True" => 1,
+            0 => 0,
+            _ => 1,
+        };
+
+        public long? FlagRaw(string column) => this[column] switch
+        {
+            null => null,
+            "true" or "True" => -1,
             "false" or "False" => 0,
-            _ => OptionalLong(column) is 0 ? 0 : 1,
+            _ => OptionalLong(column),
         };
 
         /// <summary>The stored PIN as its decimal digits. Leading zeros were already lost in Access.</summary>

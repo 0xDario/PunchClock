@@ -33,29 +33,26 @@ public sealed class ImportAnalyzerTests : IDisposable
         Assert.Equal(2, plan.Shifts.Count);
         Assert.Equal([FindingCode.DummyShift], Codes(plan, 10));
         Assert.Equal([FindingCode.ZeroLengthShift], Codes(plan, 11));
+        Assert.All(plan.Shifts, s => Assert.Equal(Disposition.Skipped, s.Disposition));
         Assert.Equal(FindingLevel.Info, plan.Findings.Single(f => f.Code == FindingCode.DummyShift).Level);
     }
 
     [Fact]
-    public void Keeps_orphan_shifts_under_one_inactive_placeholder_per_missing_employee()
+    public void Skips_orphan_shifts_the_old_report_never_counted()
     {
         _export.Employee(1, "Ann", "Lee")
             .Shift(10, 1, "2025-01-06 08:00:00", "2025-01-06 16:00:00")
             .Shift(11, 7, "2025-01-06 08:00:00", "2025-01-06 12:00:00")
-            .Shift(12, 7, "2025-01-07 08:00:00", "2025-01-07 12:00:00");
+            .Shift(12, null, "2025-01-07 08:00:00", "2025-01-07 12:00:00");
 
         var plan = Analyze();
 
-        var placeholder = Assert.Single(plan.Employees, e => e.IsPlaceholder);
-        Assert.Equal(7, placeholder.LegacyEmployeeId);
-        Assert.False(placeholder.IsActive);
-        Assert.Null(placeholder.LegacyPin);
-        Assert.All(plan.Shifts.Where(s => s.Source.EmployeeId == 7), s =>
-        {
-            Assert.Same(placeholder, s.Employee);
-            Assert.Contains(FindingCode.OrphanShift, s.Flags);
-        });
-        Assert.Equal(8, plan.Totals.ByEmployee.Single(e => e.LegacyEmployeeId == 7).WallClock.TotalHours);
+        Assert.Single(plan.Employees);
+        Assert.Equal(Disposition.Skipped, plan.Shifts.Single(s => s.Source.ShiftId == 11).Disposition);
+        Assert.Contains(FindingCode.OrphanShift, Codes(plan, 11));
+        Assert.Contains(FindingCode.MissingEmployeeId, Codes(plan, 12));
+        Assert.Equal(2, plan.Totals.OrphanShiftRows);
+        Assert.Equal(8, plan.Totals.TotalWallClock.TotalHours);
     }
 
     [Fact]
@@ -70,6 +67,8 @@ public sealed class ImportAnalyzerTests : IDisposable
 
         Assert.Contains(FindingCode.OpenShiftStale, Codes(plan, 10));
         Assert.Contains(FindingCode.OpenShiftCurrent, Codes(plan, 12));
+        Assert.Equal(Disposition.ImportedFlagged, plan.Shifts.Single(s => s.Source.ShiftId == 12).Disposition);
+        Assert.Equal(Disposition.Imported, plan.Shifts.Single(s => s.Source.ShiftId == 11).Disposition);
         Assert.Equal(2, plan.Totals.ByEmployee.Single().OpenShifts);
     }
 
@@ -130,6 +129,7 @@ public sealed class ImportAnalyzerTests : IDisposable
         Assert.Contains(plan.Findings, f => f.Code == FindingCode.PinMissing && f.LegacyId == 2);
         Assert.Equal(2, plan.Findings.Count(f => f.Code == FindingCode.DuplicateName));
         Assert.Contains(plan.Findings, f => f.Code == FindingCode.MissingName && f.LegacyId == 3);
+        Assert.Equal(" ", plan.Employees[2].FirstName);
         Assert.Equal(3, plan.Findings.Count(f => f.Code == FindingCode.NoShifts));
     }
 
@@ -179,8 +179,9 @@ public sealed class ImportAnalyzerTests : IDisposable
         var text = File.ReadAllText(Path.Combine(dir, ImportReport.ReportFile));
         Assert.Contains("CHECK ONLY", text);
         Assert.Contains("Shift 11, employee 9", text);
+        Assert.Contains("1 belong to employees that no longer exist", text);
         var hours = File.ReadAllLines(Path.Combine(dir, ImportReport.EmployeeHoursFile));
-        Assert.Contains(hours, l => l.StartsWith("9,Unknown (legacy #9),1,1,0,8.50,8:30,"));
+        Assert.Equal("1,Ann Lee,1,0,0,0.00,0:00,0.00", hours[1]);
         Assert.True(File.Exists(Path.Combine(dir, ImportReport.FindingsFile)));
         Assert.True(File.Exists(Path.Combine(dir, ImportReport.MonthHoursFile)));
     }

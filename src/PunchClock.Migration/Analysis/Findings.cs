@@ -1,9 +1,11 @@
 namespace PunchClock.Migration.Analysis;
 
 /// <summary>
-/// Something in the legacy data a manager should know about. Findings never
-/// change what gets imported: every legacy row is carried over as recorded,
-/// and fixes go through the new app's audited correction path afterwards.
+/// Something in the legacy data a manager should know about. No legacy value
+/// is ever changed: a row is imported as recorded, imported and flagged, or
+/// skipped with its raw row kept, following the schema design
+/// (docs/database/schema-design.md, section 9). Fixes go through the new
+/// app's audited correction path afterwards.
 /// </summary>
 public enum FindingCode
 {
@@ -24,7 +26,6 @@ public enum FindingCode
     CrossesDstChange,
 
     // Employee
-    PlaceholderEmployee,
     PinMissing,
     PinLostLeadingZeros,
     MissingName,
@@ -68,13 +69,13 @@ public static class FindingInfo
 
     public static string Describe(FindingCode code) => code switch
     {
-        FindingCode.DummyShift => "Zero-length shift the old app created with each new employee",
-        FindingCode.ZeroLengthShift => "Zero-length shift (punch in and out at the same instant)",
+        FindingCode.DummyShift => "Skipped: zero-length shift the old app created with each new employee",
+        FindingCode.ZeroLengthShift => "Skipped: zero-length shift (punch in and out at the same instant)",
         FindingCode.OpenShiftCurrent => "Employee is punched in right now (latest shift has no punch out)",
         FindingCode.OpenShiftStale => "Missed punch out: shift never closed, later shifts exist",
-        FindingCode.OrphanShift => "Shift belongs to an employee ID that does not exist",
-        FindingCode.MissingEmployeeId => "Shift has no employee ID",
-        FindingCode.MissingTimeIn => "Shift has no punch-in time",
+        FindingCode.OrphanShift => "Skipped: shift belongs to an employee ID that does not exist (the old report never counted it)",
+        FindingCode.MissingEmployeeId => "Skipped: shift has no employee ID",
+        FindingCode.MissingTimeIn => "Skipped: shift has no punch-in time",
         FindingCode.NegativeShift => "Punch out is before punch in",
         FindingCode.LongShift => "Shift longer than 16 hours",
         FindingCode.OverlappingShift => "Shift starts before the employee's previous shift ended",
@@ -82,7 +83,6 @@ public static class FindingInfo
         FindingCode.DstAmbiguousTime => "Time falls in the repeated hour when clocks go back",
         FindingCode.DstNonexistentTime => "Time falls in the skipped hour when clocks go forward",
         FindingCode.CrossesDstChange => "Shift spans a daylight-saving change; real hours differ from the old report",
-        FindingCode.PlaceholderEmployee => "Placeholder employee created to hold orphan shifts",
         FindingCode.PinMissing => "Employee has no PIN",
         FindingCode.PinLostLeadingZeros => "PIN is shorter than 3 digits, so Access dropped its leading zeros",
         FindingCode.MissingName => "Employee first or last name is empty",
@@ -93,4 +93,25 @@ public static class FindingInfo
         FindingCode.SnapshotMissing => "The .accdb snapshot is not in the export folder, so its hash could not be re-checked",
         _ => code.ToString(),
     };
+
+    /// <summary>The <c>migration_issue.code</c> a finding is stored under, or null when it is report-only.</summary>
+    public static string? SchemaCode(FindingCode code) => code switch
+    {
+        FindingCode.DummyShift or FindingCode.ZeroLengthShift => "DUMMY_SHIFT",
+        FindingCode.OpenShiftCurrent or FindingCode.OpenShiftStale => "OPEN_SHIFT",
+        FindingCode.OrphanShift or FindingCode.MissingEmployeeId => "ORPHAN_EMPLOYEE",
+        FindingCode.MissingTimeIn => "NULL_TIME_IN",
+        FindingCode.NegativeShift => "NEGATIVE_DURATION",
+        FindingCode.LongShift => "LONG_SHIFT",
+        FindingCode.OverlappingShift => "OVERLAPPING_SHIFT",
+        FindingCode.DstAmbiguousTime => "DST_AMBIGUOUS",
+        FindingCode.DstNonexistentTime => "DST_INVALID",
+        FindingCode.MissingName => "NULL_NAME",
+        _ => null,
+    };
+
+    /// <summary>Findings that mean no punches are created for the shift.</summary>
+    public static bool Skips(FindingCode code) => code is
+        FindingCode.DummyShift or FindingCode.ZeroLengthShift or FindingCode.OrphanShift or
+        FindingCode.MissingEmployeeId or FindingCode.MissingTimeIn;
 }
