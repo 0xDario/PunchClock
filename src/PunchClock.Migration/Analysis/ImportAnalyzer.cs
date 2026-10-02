@@ -1,11 +1,12 @@
+using System.Globalization;
 using PunchClock.Migration.Export;
 
 namespace PunchClock.Migration.Analysis;
 
 /// <summary>
 /// Turns a verified legacy export into an import plan: every employee and
-/// shift row, legacy IDs kept, times resolved to UTC, and every anomaly
-/// flagged. Nothing is dropped, merged or repaired here.
+/// shift row with its legacy ID, times resolved to UTC, a disposition per
+/// shift, and every anomaly flagged. No legacy value is repaired here.
 /// </summary>
 public static class ImportAnalyzer
 {
@@ -23,9 +24,9 @@ public static class ImportAnalyzer
         if (!hasIsActive)
             Add(FindingCode.IsActiveColumnMissing, "Employee", null, null, "Every employee is imported as active.");
         foreach (var column in export.UnmappedColumns)
-            Add(FindingCode.UnmappedColumn, column.Split('.')[0], null, null, $"{column} is kept in the export folder but not imported.");
+            Add(FindingCode.UnmappedColumn, column.Split('.')[0], null, null, $"{column} stays in the export folder but is not imported.");
         if (!export.SnapshotVerified)
-            Add(FindingCode.SnapshotMissing, "Export", null, null, "Keep the original PunchClock.accdb backup; it is the evidence for pre-migration data.");
+            Add(FindingCode.SnapshotMissing, "Export", null, null, "Keep the backup of PunchClock.accdb; it is the evidence for pre-migration data.");
 
         // Employees, legacy IDs kept.
         var employees = new List<PlannedEmployee>();
@@ -34,11 +35,10 @@ public static class ImportAnalyzer
         {
             var planned = new PlannedEmployee(
                 e.EmployeeId,
-                e.FirstName?.Trim() ?? "",
-                e.LastName?.Trim() ?? "",
+                e.FirstName ?? "",
+                e.LastName ?? "",
                 e.PinCode,
-                e.IsActive is null ? true : e.IsActive != 0,
-                IsPlaceholder: false,
+                e.IsActive is null || e.IsActive != 0,
                 e);
             employees.Add(planned);
             byLegacyId[e.EmployeeId] = planned;
@@ -48,157 +48,120 @@ public static class ImportAnalyzer
             else if (e.PinCode.Length < 3)
                 Add(FindingCode.PinLostLeadingZeros, "Employee", e.EmployeeId, e.EmployeeId, $"Stored PIN has {e.PinCode.Length} digit(s).");
             if (string.IsNullOrWhiteSpace(e.FirstName) || string.IsNullOrWhiteSpace(e.LastName))
-                Add(FindingCode.MissingName, "Employee", e.EmployeeId, e.EmployeeId, $"First '{e.FirstName}', last '{e.LastName}'.");
+                Add(FindingCode.MissingName, "Employee", e.EmployeeId, e.EmployeeId, $"First '{e.FirstName}', last '{e.LastName}'. Imported as recorded.");
         }
 
         foreach (var group in employees
-                     .GroupBy(e => (e.FirstName.ToUpperInvariant(), e.LastName.ToUpperInvariant()))
+                     .GroupBy(e => (e.FirstName.Trim().ToUpperInvariant(), e.LastName.Trim().ToUpperInvariant()))
                      .Where(g => g.Count() > 1))
         {
             var ids = string.Join(", ", group.Select(g => g.LegacyEmployeeId));
             foreach (var e in group)
-                Add(FindingCode.DuplicateName, "Employee", e.LegacyEmployeeId, e.LegacyEmployeeId, $"Employee IDs {ids} share the name {ReconciliationTotals.DisplayName(e)}.");
+                Add(FindingCode.DuplicateName, "Employee", e.LegacyEmployeeId, e.LegacyEmployeeId, $"Employee IDs {ids} share this name.");
         }
 
-        // Orphan shifts get one inactive placeholder per missing employee ID, so
-        // the rows are kept and stay visible instead of being discarded.
-        PlannedEmployee? noIdPlaceholder = null;
-        PlannedEmployee OwnerOf(LegacyShift s)
+        // Shifts: owner, times, then the reasons a shift is skipped.
+        var drafts = new List<Draft>();
+        void Flag(Draft d, FindingCode code, string detail)
         {
-            if (s.EmployeeId is not { } id)
-            {
-                if (noIdPlaceholder is null)
-                {
-                    noIdPlaceholder = new PlannedEmployee(null, "Unknown", "(no employee ID)", null, false, true, null);
-                    employees.Add(noIdPlaceholder);
-                    Add(FindingCode.PlaceholderEmployee, "Employee", null, null, "Holds shifts that have no employee ID.");
-                }
-                return noIdPlaceholder;
-            }
-
-            if (byLegacyId.TryGetValue(id, out var existing))
-                return existing;
-
-            var placeholder = new PlannedEmployee(id, "Unknown", $"(legacy #{id})", null, false, true, null);
-            employees.Add(placeholder);
-            byLegacyId[id] = placeholder;
-            Add(FindingCode.PlaceholderEmployee, "Employee", null, id, $"No Employee row has ID {id}; imported inactive, without a PIN.");
-            return placeholder;
-        }
-
-        // Shifts: resolve times, then flag.
-        var flags = new Dictionary<long, List<FindingCode>>();
-        void Flag(PlannedShiftDraft d, FindingCode code, string detail)
-        {
-            flags[d.Source.ShiftId].Add(code);
+            d.Flags.Add(code);
             Add(code, "Shift", d.Source.ShiftId, d.Source.EmployeeId, detail);
         }
 
-        var drafts = new List<PlannedShiftDraft>();
         foreach (var s in export.Shifts)
         {
-            flags[s.ShiftId] = [];
-            var owner = OwnerOf(s);
-            var draft = new PlannedShiftDraft(s, owner);
-            drafts.Add(draft);
+            var d = new Draft(s, s.EmployeeId is { } id ? byLegacyId.GetValueOrDefault(id) : null);
+            drafts.Add(d);
 
-            if (owner.IsPlaceholder)
+            if (s.EmployeeId is null)
+                Flag(d, FindingCode.MissingEmployeeId, "Raw row kept.");
+            else if (d.Employee is null)
+                Flag(d, FindingCode.OrphanShift, $"No Employee row has ID {s.EmployeeId}. Raw row kept.");
+
+            if (s.TimeIn is not { } tin)
             {
-                if (s.EmployeeId is null)
-                    Flag(draft, FindingCode.MissingEmployeeId, "Assigned to the 'Unknown (no employee ID)' placeholder.");
-                else
-                    Flag(draft, FindingCode.OrphanShift, $"Employee ID {s.EmployeeId} does not exist; assigned to its placeholder.");
+                Flag(d, FindingCode.MissingTimeIn, "Raw row kept.");
+                continue;
             }
 
-            if (s.TimeIn is { } tin)
-                draft.In = Resolve(tin, timeZone, c => Flag(draft, c, $"Punch in {Fmt(tin)}."));
-            else
-                Flag(draft, FindingCode.MissingTimeIn, "Kept as a legacy record; not counted in hours.");
+            if (s.TimeOut is { } tout && tout == tin)
+            {
+                // The old app's NewStaffForm wrote one of these for every new employee.
+                var isFirst = d.Employee is not null && !export.Shifts.Any(o => o.EmployeeId == s.EmployeeId && o.ShiftId < s.ShiftId);
+                Flag(d, isFirst ? FindingCode.DummyShift : FindingCode.ZeroLengthShift, $"At {Fmt(tin)}. Counts as 0 hours either way.");
+            }
 
-            if (s.TimeOut is { } tout)
-                draft.Out = Resolve(tout, timeZone, c => Flag(draft, c, $"Punch out {Fmt(tout)}."));
+            if (d.Flags.Any(FindingInfo.Skips))
+                continue;
+
+            d.In = Resolve(tin, timeZone, c => Flag(d, c, $"Punch in {Fmt(tin)}."));
+            if (s.TimeOut is { } t)
+                d.Out = Resolve(t, timeZone, c => Flag(d, c, $"Punch out {Fmt(t)}."));
         }
 
-        foreach (var group in drafts.GroupBy(d => d.Employee))
+        foreach (var group in drafts.Where(d => d.In is not null).GroupBy(d => d.Employee!))
         {
             var byId = group.OrderBy(d => d.Source.ShiftId).ToList();
-            var withIn = group.Where(d => d.In is not null)
-                .OrderBy(d => d.In!.Value.Local).ThenBy(d => d.Source.ShiftId).ToList();
-            var firstById = byId[0];
+            var byTime = group.OrderBy(d => d.In!.Value.Local).ThenBy(d => d.Source.ShiftId).ToList();
 
-            foreach (var d in byId)
+            foreach (var d in byId.Where(d => d.Out is not null))
             {
-                var s = d.Source;
-                if (s.TimeIn is { } tin && s.TimeOut is { } tout)
-                {
-                    var length = tout - tin;
-                    if (length == TimeSpan.Zero)
-                    {
-                        if (ReferenceEquals(d, firstById) && !d.Employee.IsPlaceholder)
-                            Flag(d, FindingCode.DummyShift, "Counts as 0 hours.");
-                        else
-                            Flag(d, FindingCode.ZeroLengthShift, $"At {Fmt(tin)}. Counts as 0 hours.");
-                    }
-                    else if (length < TimeSpan.Zero)
-                        Flag(d, FindingCode.NegativeShift, $"{Fmt(tin)} to {Fmt(tout)} ({Hours(length)} h). The old report subtracts these hours.");
-                    else if (length > LongShiftThreshold)
-                        Flag(d, FindingCode.LongShift, $"{Fmt(tin)} to {Fmt(tout)} ({Hours(length)} h).");
+                var tin = d.In!.Value;
+                var tout = d.Out!.Value;
+                var length = tout.Local - tin.Local;
+                if (length < TimeSpan.Zero)
+                    Flag(d, FindingCode.NegativeShift, $"{Fmt(tin.Local)} to {Fmt(tout.Local)} ({Hours(length)} h). The old report subtracts these hours.");
+                else if (length > LongShiftThreshold)
+                    Flag(d, FindingCode.LongShift, $"{Fmt(tin.Local)} to {Fmt(tout.Local)} ({Hours(length)} h).");
 
-                    if (d.In is { } i && d.Out is { } o && i.UtcOffsetMinutes != o.UtcOffsetMinutes)
-                    {
-                        var delta = (o.Utc - i.Utc) - length;
-                        Flag(d, FindingCode.CrossesDstChange, $"Old report counts {Hours(length)} h, actual elapsed time is {Hours(length + delta)} h.");
-                    }
-                }
+                if (tin.UtcOffsetMinutes != tout.UtcOffsetMinutes)
+                    Flag(d, FindingCode.CrossesDstChange, $"Old report counts {Hours(length)} h, actual elapsed time is {Hours(tout.Utc - tin.Utc)} h.");
             }
 
-            // Open shifts: the employee's latest shift by time is a live punch-in;
-            // any other open shift is a missed punch-out.
-            var latest = withIn.LastOrDefault();
-            foreach (var d in withIn.Where(d => d.Out is null))
+            // The employee's latest shift by time is a live punch-in; any other
+            // open shift is a punch-out that never happened.
+            var latest = byTime[^1];
+            foreach (var d in byTime.Where(d => d.Out is null))
             {
                 if (ReferenceEquals(d, latest))
-                    Flag(d, FindingCode.OpenShiftCurrent, $"Punched in at {Fmt(d.Source.TimeIn!.Value)}. The new app starts with this employee punched in.");
+                    Flag(d, FindingCode.OpenShiftCurrent, $"Punched in at {Fmt(d.In!.Value.Local)}. The new app starts with this employee punched in.");
                 else
-                    Flag(d, FindingCode.OpenShiftStale, $"Punched in at {Fmt(d.Source.TimeIn!.Value)} and never out.");
+                    Flag(d, FindingCode.OpenShiftStale, $"Punched in at {Fmt(d.In!.Value.Local)} and never out.");
             }
 
-            // Overlap by time. An open shift extends to the next shift's start.
-            for (var k = 1; k < withIn.Count; k++)
+            for (var k = 1; k < byTime.Count; k++)
             {
-                var prev = withIn[k - 1];
-                var cur = withIn[k];
-                var prevEnd = prev.Out?.Local;
-                if (prevEnd is { } end && end > cur.In!.Value.Local && end > prev.In!.Value.Local)
-                    Flag(cur, FindingCode.OverlappingShift, $"Starts {Fmt(cur.In.Value.Local)}, shift {prev.Source.ShiftId} ends {Fmt(end)}.");
+                var prev = byTime[k - 1];
+                var cur = byTime[k];
+                if (prev.Out?.Local is { } end && end > cur.In!.Value.Local && end > prev.In!.Value.Local)
+                    Flag(cur, FindingCode.OverlappingShift, $"Starts {Fmt(cur.In.Value.Local)}, before shift {prev.Source.ShiftId} ends at {Fmt(end)}.");
             }
 
-            // The old app derived punch state from the highest ShiftID, so a row
-            // whose ID order disagrees with its time order was inserted by hand.
-            DateTime? maxIn = null;
-            long maxInShift = 0;
-            foreach (var d in byId.Where(d => d.In is not null))
+            // The old app took punch state from the highest ShiftID, so an ID order
+            // that disagrees with time order means a row was added by hand in Access.
+            Draft? maxIn = null;
+            foreach (var d in byId)
             {
-                var t = d.In!.Value.Local;
-                if (maxIn is { } m && t < m)
-                    Flag(d, FindingCode.OutOfOrderShiftId, $"Shift {d.Source.ShiftId} starts {Fmt(t)}, before shift {maxInShift} ({Fmt(m)}) which has a lower ID.");
-                if (maxIn is null || t > maxIn)
-                {
-                    maxIn = t;
-                    maxInShift = d.Source.ShiftId;
-                }
+                if (maxIn is not null && d.In!.Value.Local < maxIn.In!.Value.Local)
+                    Flag(d, FindingCode.OutOfOrderShiftId, $"Starts {Fmt(d.In.Value.Local)}, before shift {maxIn.Source.ShiftId} ({Fmt(maxIn.In.Value.Local)}), which has a lower ID.");
+                if (maxIn is null || d.In!.Value.Local > maxIn.In!.Value.Local)
+                    maxIn = d;
             }
         }
 
-        var shifts = drafts
-            .Select(d => new PlannedShift(d.Source, d.Employee, d.In, d.Out, flags[d.Source.ShiftId]))
+        var shifts = drafts.Select(d => new PlannedShift(
+                d.Source,
+                d.Employee,
+                d.In,
+                d.Out,
+                d.Flags,
+                d.Flags.Any(FindingInfo.Skips) ? Disposition.Skipped
+                : d.Flags.Any(c => FindingInfo.SchemaCode(c) is not null) ? Disposition.ImportedFlagged
+                : Disposition.Imported))
             .ToList();
 
-        foreach (var e in employees.Where(e => !e.IsPlaceholder))
-        {
-            if (!shifts.Any(s => ReferenceEquals(s.Employee, e)))
-                Add(FindingCode.NoShifts, "Employee", e.LegacyEmployeeId, e.LegacyEmployeeId, "Nothing to import for this employee besides the record itself.");
-        }
+        foreach (var e in employees.Where(e => !shifts.Any(s => s.Employee == e && s.Disposition != Disposition.Skipped)))
+            Add(FindingCode.NoShifts, "Employee", e.LegacyEmployeeId, e.LegacyEmployeeId, "No punches to import for this employee.");
 
         return new ImportPlan
         {
@@ -211,15 +174,16 @@ public static class ImportAnalyzer
                 .ThenBy(f => f.Code)
                 .ThenBy(f => f.LegacyId)
                 .ToList(),
-            Totals = ReconciliationTotals.Compute(export.Employees.Count, employees, shifts),
+            Totals = ReconciliationTotals.Compute(employees, shifts),
         };
     }
 
     /// <summary>
     /// Converts a legacy wall-clock time to UTC. In the repeated hour when
     /// clocks go back, the earlier (daylight) instant is used; in the skipped
-    /// hour when clocks go forward, the offset in force just before the gap is
-    /// used. Both cases are flagged because the true instant is unknowable.
+    /// hour when clocks go forward, the offset in force before the gap is used,
+    /// which moves the time forward by the DST step. Both are flagged because
+    /// the true instant cannot be known.
     /// </summary>
     public static ResolvedTime Resolve(DateTime local, TimeZoneInfo zone, Action<FindingCode>? flag = null)
     {
@@ -243,14 +207,15 @@ public static class ImportAnalyzer
         return new ResolvedTime(local, DateTime.SpecifyKind(local - offset, DateTimeKind.Utc), (int)offset.TotalMinutes);
     }
 
-    static string Fmt(DateTime t) => t.ToString("yyyy-MM-dd HH:mm:ss");
+    static string Fmt(DateTime t) => t.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
 
-    static string Hours(TimeSpan t) => t.TotalHours.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+    static string Hours(TimeSpan t) => t.TotalHours.ToString("0.00", CultureInfo.InvariantCulture);
 
-    sealed class PlannedShiftDraft(LegacyShift source, PlannedEmployee employee)
+    sealed class Draft(LegacyShift source, PlannedEmployee? employee)
     {
         public LegacyShift Source { get; } = source;
-        public PlannedEmployee Employee { get; } = employee;
+        public PlannedEmployee? Employee { get; } = employee;
+        public List<FindingCode> Flags { get; } = [];
         public ResolvedTime? In { get; set; }
         public ResolvedTime? Out { get; set; }
     }

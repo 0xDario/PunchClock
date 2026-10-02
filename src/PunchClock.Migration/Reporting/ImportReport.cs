@@ -33,14 +33,14 @@ public static class ImportReport
             ["legacy_employee_id", "name", "shift_rows", "closed_shifts", "open_shifts", "hours", "hh_mm", "elapsed_hours"],
             plan.Totals.ByEmployee.Select(e => new[]
             {
-                e.LegacyEmployeeId?.ToString(Inv), e.Name, e.ShiftRows.ToString(Inv), e.ClosedShifts.ToString(Inv),
+                e.LegacyEmployeeId.ToString(Inv), e.Name, e.ShiftRows.ToString(Inv), e.ClosedShifts.ToString(Inv),
                 e.OpenShifts.ToString(Inv), Hours(e.WallClock), HhMm(e.WallClock), Hours(e.Elapsed),
             }));
         WriteCsv(Path.Combine(directory, MonthHoursFile),
             ["month", "legacy_employee_id", "name", "legacy_report_shifts", "legacy_report_hours", "legacy_report_hh_mm", "all_shifts_started", "all_hours_started"],
             plan.Totals.ByMonth.OrderBy(m => m.Month).ThenBy(m => m.LegacyEmployeeId).Select(m => new[]
             {
-                m.Month, m.LegacyEmployeeId?.ToString(Inv), m.Name, m.LegacyReportShifts.ToString(Inv), Hours(m.LegacyReport),
+                m.Month, m.LegacyEmployeeId.ToString(Inv), m.Name, m.LegacyReportShifts.ToString(Inv), Hours(m.LegacyReport),
                 HhMm(m.LegacyReport), m.ByStartMonthShifts.ToString(Inv), Hours(m.ByStartMonth),
             }));
     }
@@ -59,7 +59,10 @@ public static class ImportReport
         {
             Line(sb, "Database", outcome.DatabasePath);
             Line(sb, "Imported at (UTC)", outcome.ImportedAtUtc.ToString("yyyy-MM-dd HH:mm:ss'Z'", Inv));
-            Line(sb, "Import run", outcome.ImportRunId.ToString(Inv));
+            Line(sb, "Import batch", outcome.ImportRunId.ToString(Inv));
+            Line(sb, "Audit log head", $"seq {outcome.ChainSeq}, hash {outcome.ChainHash}");
+            sb.AppendLine("  Print this page and keep it with the PunchClock.accdb backup. The audit log head proves");
+            sb.AppendLine("  later that nothing imported today was altered.");
         }
         Line(sb, "Export folder", plan.Export.Folder);
         Line(sb, "Exported by", $"{m.Tool}, {m.ExportedAtUtc}");
@@ -72,16 +75,18 @@ public static class ImportReport
 
         sb.AppendLine("Rows");
         Line(sb, "  Employees", $"{t.EmployeeRows} in export, all imported with their legacy IDs");
-        Line(sb, "  Placeholders", $"{t.PlaceholderEmployees} added for shifts whose employee no longer exists");
-        Line(sb, "  Shifts", $"{t.ShiftRows} in export, all imported with their legacy IDs");
+        Line(sb, "  Shifts", $"{t.ShiftRows} in export, {t.ShiftRows - t.SkippedShiftRows} imported as punches, {t.SkippedShiftRows} skipped (listed below)");
+        if (t.OrphanShiftRows > 0)
+            Line(sb, "  Orphan shifts", $"{t.OrphanShiftRows} belong to employees that no longer exist; the old report never counted them");
+        sb.AppendLine("  Every row, including skipped ones, is stored unchanged in the new database as evidence.");
         if (outcome is not null)
-            Line(sb, "  Punches written", $"{outcome.PunchesWritten} ({outcome.PunchesWritten - t.ShiftRows} punch-outs, the rest punch-ins)");
+            Line(sb, "  Punches written", outcome.PunchesWritten.ToString(Inv));
         foreach (var w in m.Warnings)
             Line(sb, "  Export warning", w);
         sb.AppendLine();
 
         sb.AppendLine($"Needs review after import ({review.Count})");
-        sb.AppendLine("Nothing below was changed or dropped. Fix it in the new app, where every correction is logged.");
+        sb.AppendLine("No legacy value was changed. Fix these in the new app, where every correction is logged.");
         AppendFindings(sb, review);
         sb.AppendLine();
         sb.AppendLine($"For information ({info.Count})");
@@ -91,8 +96,8 @@ public static class ImportReport
         sb.AppendLine("Hours per employee, all closed shifts, counted the way the old report counts them");
         sb.AppendLine($"  {"ID",-8}{"Name",-28}{"Shifts",8}{"Open",6}{"Hours",11}");
         foreach (var e in t.ByEmployee)
-            sb.AppendLine($"  {e.LegacyEmployeeId?.ToString(Inv) ?? "-",-8}{Clip(e.Name, 27),-28}{e.ShiftRows,8}{e.OpenShifts,6}{Hours(e.WallClock),11}");
-        sb.AppendLine($"  {"",-8}{"Total",-28}{t.ShiftRows,8}{t.ByEmployee.Sum(e => e.OpenShifts),6}{Hours(t.ByEmployee.Aggregate(TimeSpan.Zero, (a, e) => a + e.WallClock)),11}");
+            sb.AppendLine($"  {e.LegacyEmployeeId.ToString(Inv),-8}{Clip(e.Name, 27),-28}{e.ShiftRows,8}{e.OpenShifts,6}{Hours(e.WallClock),11}");
+        sb.AppendLine($"  {"",-8}{"Total",-28}{t.ByEmployee.Sum(e => e.ShiftRows),8}{t.ByEmployee.Sum(e => e.OpenShifts),6}{Hours(t.TotalWallClock),11}");
         sb.AppendLine();
         sb.AppendLine("To reconcile: in the old app, run the hours report for one whole month (start date the 1st,");
         sb.AppendLine("end date the last day). Each employee's total must equal legacy_report_hours for that month");
@@ -154,4 +159,5 @@ public static class ImportReport
 }
 
 /// <summary>What an import wrote, for the report.</summary>
-public sealed record ImportOutcome(string DatabasePath, long ImportRunId, DateTime ImportedAtUtc, int PunchesWritten);
+/// <param name="ChainSeq">Audit log head after the import; with <paramref name="ChainHash"/>, the first external anchor.</param>
+public sealed record ImportOutcome(string DatabasePath, long ImportRunId, DateTime ImportedAtUtc, int PunchesWritten, long ChainSeq, string ChainHash);

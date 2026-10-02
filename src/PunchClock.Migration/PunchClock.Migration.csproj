@@ -6,6 +6,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\PunchClock.Core\PunchClock.Core.csproj" />
+    <ProjectReference Include="..\PunchClock.Data.Sqlite\PunchClock.Data.Sqlite.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="PunchClock.Migration.Tests" />
   </ItemGroup>
 

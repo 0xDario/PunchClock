@@ -17,6 +17,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The importer is tested against the audit schema exactly as designed. -->
+    <None Include="..\..\docs\database\schema.sql" Link="schema.sql" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\PunchClock.Migration\PunchClock.Migration.csproj" />
   </ItemGroup>
 

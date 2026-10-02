@@ -2,8 +2,10 @@ using System.Globalization;
 
 namespace PunchClock.Migration.Analysis;
 
+/// <param name="ShiftRows">Legacy rows for this employee, including skipped ones.</param>
+/// <param name="ClosedShifts">Imported shifts with both punches; the old report counts exactly these (dummy shifts add 0 hours).</param>
 public sealed record EmployeeTotals(
-    long? LegacyEmployeeId,
+    long LegacyEmployeeId,
     string Name,
     int ShiftRows,
     int ClosedShifts,
@@ -21,7 +23,7 @@ public sealed record EmployeeTotals(
 /// they end after midnight on the last day.
 /// </summary>
 public sealed record MonthTotals(
-    long? LegacyEmployeeId,
+    long LegacyEmployeeId,
     string Name,
     string Month,
     int LegacyReportShifts,
@@ -29,15 +31,18 @@ public sealed record MonthTotals(
     int ByStartMonthShifts,
     TimeSpan ByStartMonth);
 
+/// <param name="OrphanShiftRows">Shifts whose employee does not exist. The old report joins Employee, so it never counted them either.</param>
 public sealed record ReconciliationTotals(
     int EmployeeRows,
-    int PlaceholderEmployees,
     int ShiftRows,
+    int SkippedShiftRows,
+    int OrphanShiftRows,
     IReadOnlyList<EmployeeTotals> ByEmployee,
     IReadOnlyList<MonthTotals> ByMonth)
 {
+    public TimeSpan TotalWallClock => ByEmployee.Aggregate(TimeSpan.Zero, (a, e) => a + e.WallClock);
+
     public static ReconciliationTotals Compute(
-        int employeeRows,
         IReadOnlyList<PlannedEmployee> employees,
         IReadOnlyList<PlannedShift> shifts)
     {
@@ -79,9 +84,10 @@ public sealed record ReconciliationTotals(
         }
 
         return new ReconciliationTotals(
-            employeeRows,
-            employees.Count(e => e.IsPlaceholder),
+            employees.Count,
             shifts.Count,
+            shifts.Count(s => s.Disposition == Disposition.Skipped),
+            shifts.Count(s => s.Employee is null),
             byEmployee,
             byMonth);
     }

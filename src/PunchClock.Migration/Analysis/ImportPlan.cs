@@ -5,21 +5,32 @@ namespace PunchClock.Migration.Analysis;
 /// <summary>A legacy local time resolved to an instant using the site's time zone.</summary>
 public readonly record struct ResolvedTime(DateTime Local, DateTime Utc, int UtcOffsetMinutes);
 
+/// <summary>What the importer does with a legacy row. Every row is also kept verbatim as evidence.</summary>
+public enum Disposition
+{
+    Imported,
+    ImportedFlagged,
+
+    /// <summary>No punches are created; the raw row and the reason are still stored.</summary>
+    Skipped,
+}
+
 public sealed record PlannedEmployee(
-    long? LegacyEmployeeId,
+    long LegacyEmployeeId,
     string FirstName,
     string LastName,
     string? LegacyPin,
     bool IsActive,
-    bool IsPlaceholder,
-    LegacyEmployee? Source);
+    LegacyEmployee Source);
 
+/// <param name="Employee">Null for an orphan shift whose employee does not exist.</param>
 public sealed record PlannedShift(
     LegacyShift Source,
-    PlannedEmployee Employee,
+    PlannedEmployee? Employee,
     ResolvedTime? In,
     ResolvedTime? Out,
-    IReadOnlyList<FindingCode> Flags)
+    IReadOnlyList<FindingCode> Flags,
+    Disposition Disposition)
 {
     /// <summary>
     /// TimeOut minus TimeIn on the wall clock, which is what the old Access report
