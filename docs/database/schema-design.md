@@ -197,6 +197,8 @@ Pairs with the exporter in `migration/legacy-export/` (PR #4): `Employee.csv`, `
 | `EmployeeID` with no employee | `ORPHAN_EMPLOYEE` | SKIPPED (raw row kept) |
 | NULL first or last name | `NULL_NAME` | IMPORTED_FLAGGED, stored as empty string |
 | every imported PIN | `PIN_RESET_REQUIRED` | IMPORTED |
+| `ShiftID` order disagrees with `TimeIn` order for the same employee (legacy state came from ID order) | `OUT_OF_ORDER_ID` | IMPORTED_FLAGGED |
+| shift spans a DST transition (duration differs from wall-clock difference) | `CROSSES_DST` | IMPORTED_FLAGGED |
 
 6. Close the batch (`completed_utc`). The trigger refuses unless the raw tables hold exactly the manifest's row counts.
 7. Take the first checkpoint and print it on the migration sign-off sheet. An admin then deactivates the `migration` account. Flagged punches are fixed afterwards through ordinary corrections, so every post-migration change is itself audited.
