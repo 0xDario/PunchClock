@@ -106,6 +106,7 @@ jobs:
           # The published, self-contained importer must start and reject a bad argument on a clean runner.
           & publish\migration\PunchClock.Import.exe check
           if ($LASTEXITCODE -ne 1) { throw "Expected usage error (1), got $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
 
       - uses: actions/upload-artifact@v4
         with:
