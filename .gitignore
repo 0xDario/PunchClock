@@ -361,3 +361,6 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# Legacy Access export output (contains plaintext PINs) and fetched jars
+legacy-export-*/
+migration/legacy-export/jackcess/lib/
