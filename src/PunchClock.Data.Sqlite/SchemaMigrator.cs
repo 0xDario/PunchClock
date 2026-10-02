@@ -24,6 +24,13 @@ public sealed class SchemaMismatchException(string message) : Exception(message)
 /// </summary>
 public sealed partial class SchemaMigrator
 {
+    /// <summary>
+    /// Oldest SQLite engine the schema supports: the audit-log design uses ORDER BY inside
+    /// aggregates (3.44). The engine ships inside the SQLitePCLRaw bundle, so a package
+    /// downgrade is the only way to fall below it; this turns that into a clear startup error.
+    /// </summary>
+    public static readonly Version MinimumSqliteVersion = new(3, 44, 0);
+
     private readonly SqliteDatabase _database;
 
     public SchemaMigrator(SqliteDatabase database)
@@ -47,6 +54,7 @@ public sealed partial class SchemaMigrator
     public async Task<IReadOnlyList<int>> MigrateAsync(CancellationToken ct = default)
     {
         await using var connection = await _database.OpenAsync(ct);
+        EnsureSupportedEngine(connection.ServerVersion);
 
         // WAL lets readers proceed while a punch is being written. It is persistent, and
         // cannot be changed inside a transaction, so it is set here once.
@@ -100,6 +108,15 @@ public sealed partial class SchemaMigrator
 
         await transaction.CommitAsync(ct);
         return newlyApplied;
+    }
+
+    internal static void EnsureSupportedEngine(string sqliteVersion)
+    {
+        if (!Version.TryParse(sqliteVersion, out var version) || version < MinimumSqliteVersion)
+        {
+            throw new SchemaMismatchException(
+                $"SQLite {sqliteVersion} is too old; PunchClock needs {MinimumSqliteVersion} or newer.");
+        }
     }
 
     public static IReadOnlyList<Migration> LoadEmbedded()
