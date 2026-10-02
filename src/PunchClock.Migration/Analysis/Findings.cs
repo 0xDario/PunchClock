@@ -107,6 +107,8 @@ public static class FindingInfo
         FindingCode.DstAmbiguousTime => "DST_AMBIGUOUS",
         FindingCode.DstNonexistentTime => "DST_INVALID",
         FindingCode.MissingName => "NULL_NAME",
+        FindingCode.OutOfOrderShiftId => "OUT_OF_ORDER_ID",
+        FindingCode.CrossesDstChange => "CROSSES_DST",
         _ => null,
     };
 

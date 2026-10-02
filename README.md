@@ -1,6 +1,6 @@
 # PunchClock
 
-> **v2 rewrite in progress.** The new app lives in `src/` and `tests/` (`PunchClock.Modern.sln`): .NET 10 WPF on a local SQLite database. Everything below describes the legacy v1 WinForms + Access app in `PunchClock/`, which is kept unchanged until the data migration is done. See [v2 rewrite](#v2-rewrite) at the end.
+> **v2 rewrite in progress.** The new app lives in `src/` and `tests/` (`PunchClock.Modern.sln`): .NET 10 WPF on a local SQLite database. Everything below describes the legacy v1 WinForms + Access app in `PunchClock/`, which is kept unchanged until the data migration is done. See [v2 rewrite](#v2-rewrite) at the end, and [Moving from the old PunchClock app](#moving-from-the-old-punchclock-app) for the switchover.
 
 _A basic Windows Forms Punch Clock application that allows staff to Punch In/Out of work._
 
@@ -28,10 +28,60 @@ Application in Action:
 | `src/PunchClock.Core` | Domain and rules: explicit punch in/out, PIN policy and PBKDF2 hashing. No I/O. |
 | `src/PunchClock.Data.Sqlite` | SQLite storage, embedded SQL migrations, database path resolution. |
 | `src/PunchClock.App` | WPF kiosk (`net10.0-windows`). |
+| `src/PunchClock.Migration` | Legacy import: verifies the exporter's CSVs and manifest, flags anomalies, writes the audit-logged import. |
+| `src/PunchClock.Import` | `PunchClock.Import.exe`, the one-time import program shipped in the installer. |
 | `tests/PunchClock.Tests` | xUnit v3 tests against real SQLite files. |
+| `tests/PunchClock.Migration.Tests` | Importer tests against `docs/database/schema.sql`. |
 
 Requires the .NET 10 SDK. On Windows: `dotnet run --project src/PunchClock.App`. Anywhere: `dotnet build PunchClock.Modern.sln` and `dotnet test --solution PunchClock.Modern.sln` (the WPF project builds on Linux/macOS but only runs on Windows).
 
 - **Database**: `%ProgramData%\PunchClock\punchclock.db`, or the path in `PUNCHCLOCK_DB`. Created and migrated on startup. Debug builds seed two demo employees (PINs `1234` and `0042`).
 - **Punches** are immutable IN/OUT events stored in UTC with the site's UTC offset; shifts are derived. The employee chooses In or Out and the app refuses a choice that contradicts their current state, so a forgotten punch-out is surfaced instead of silently becoming a multi-day shift.
 - **Migrations** are `src/PunchClock.Data.Sqlite/Migrations/NNNN_name.sql`, applied in order in one transaction and checksummed. Never edit an applied migration; add a new one.
+
+## Moving from the old PunchClock app
+
+One-time switchover of a PC running the old app (v1.x, Access database) to v2. Do it when nobody needs to punch, and do every step on that PC. Nothing below changes or deletes the old database: until someone punches in the new app, going back means simply starting the old app again.
+
+**You need** the v2 installer, `PunchClock-Setup-<version>.exe`, from [Releases](https://github.com/0xDario/PunchClock/releases), and a USB stick for the backup.
+
+1. **Stop the old app.** Pick a time when nobody is on shift, close PunchClock, and check Task Manager that `PunchClock.exe` is gone.
+
+2. **Back up the database.** Right-click the old PunchClock shortcut, choose *Open file location*, and find `PunchClock.accdb` in that folder (the old app keeps it next to `PunchClock.exe`). Copy it to the USB stick and to one more place, renamed `PunchClock-backup-<date>.accdb`. Do not open the original in Access.
+
+3. **Print the old hours report** for the last complete month, the way you normally run it (if that means opening the file in Access, open a copy of the backup, never the original). You will compare it with the new app in step 7.
+
+4. **Install v2.** Run the installer. It is not code-signed yet, so Windows shows *Windows protected your PC*: click **More info**, then **Run anyway**. It installs to Program Files, creates `C:\ProgramData\PunchClock` for the database, and adds a Start menu folder *PunchClock > Move data from the old app*. Do not punch in the new app yet.
+
+5. **Export the old data.** Start menu > *PunchClock > Move data from the old app > 1. Export old data*, then pick the original `PunchClock.accdb` from step 2. The exporter works on a copy, checks every row count with Access, records this PC's time zone, and writes `legacy-export-<timestamp>.zip` to the Desktop. If it says the database is open, the old app is still running; close it and try again.
+
+6. **Import into v2.** Start menu > *2. Import into PunchClock*. Drag the zip from the Desktop onto the window and press Enter. The importer verifies the export, shows how many employees, shifts and hours it found and which time zone it will use (press Enter if that is where the punches were recorded), and opens a check report in Notepad. Read its *Needs review* list, then type `IMPORT`. It writes everything in one step and opens the import report: **print it** and keep it with the backup. Its *Audit log head* line is the fingerprint that proves later that the imported history was not altered.
+
+7. **Reconcile hours.** Open `hours-by-month.csv` (next to the zip on the Desktop, in the `-import` folder). For the month you printed in step 3, each employee's `legacy_report_hours` must equal the old report's total exactly. Employee and shift counts are already checked by the importer, which refuses to finish if any row is missing. If the hours do not match, keep using the old app and send the zip and both report folders to whoever maintains PunchClock; nothing in the old database has changed.
+
+8. **Switch over.** Start *PunchClock* from the Start menu and check that every employee is listed. Anyone still punched in at the export shows as punched in. PINs carry over, but the old app stored them as numbers, so a PIN that started with 0 lost that digit (`0123` is now `123`); every PIN is flagged to be changed, because the old file kept them in plain text.
+
+9. **Retire the old app.** Delete its Desktop and Startup shortcuts and rename its folder to `PunchClock-v1-retired` so nobody starts it by habit; a punch there would be missing from v2. Keep the `.accdb` backup, the export zip and the printed reports for as long as payroll records must be kept where you are. The zip holds every old PIN in plain text, so store it on the USB stick, not on the shared PC, and delete both Desktop copies (the `legacy-export-<timestamp>` folder and its zip). A copy of the import report and manifest also stays in `C:\ProgramData\PunchClock\imports`.
+
+What the import does with the old data, in short:
+
+- Every employee and shift keeps its old ID, and every exported row is stored unchanged in the new database as evidence (except PINs, which are stored only as hashes).
+- Times are converted from the PC's local time to UTC with the recorded time zone, so shifts across a daylight-saving change get their true length. Times in the repeated or skipped hour are flagged.
+- Skipped, with the raw row kept and the reason recorded: the zero-length shift the old app added for every new employee, shifts whose employee no longer exists (the old report never counted them either), and shifts with no punch-in time.
+- Imported and flagged for a manager to fix through the new app's audited corrections: missed punch-outs, punch-outs before punch-ins, shifts over 16 hours, overlaps, rows added out of order (a sign of hand edits in Access).
+- The whole import is one audited event as the `migration` account, carrying the old file's SHA-256 and row counts. It is all or nothing, it refuses to run twice, and it refuses a database that already has employees or punches.
+
+From a command prompt, the same importer runs unattended:
+
+```
+"C:\Program Files\PunchClock\Migration\PunchClock.Import.exe" check  legacy-export-<timestamp>.zip
+"C:\Program Files\PunchClock\Migration\PunchClock.Import.exe" import legacy-export-<timestamp>.zip --yes [--time-zone "Eastern Standard Time"] [--db <path>]
+```
+
+## Releasing
+
+1. Set `<Version>` in `src/Directory.Build.props` and merge to `master`.
+2. Tag it: `git tag v2.0.0 && git push origin v2.0.0`. v1.x tags are the legacy app.
+3. `.github/workflows/release.yml` runs the tests, publishes the app and the importer self-contained for `win-x64`, bundles the exporter, builds `PunchClock-Setup-<version>.exe` (Inno Setup, `installer/PunchClock.iss`) plus a portable zip and `SHA256SUMS.txt`, and attaches them to a **draft** release. Check the draft, then publish it.
+
+Pull requests that touch packaging build the same installer as a workflow artifact, without a release.
