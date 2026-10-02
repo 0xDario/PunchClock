@@ -1,0 +1,6 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>
+<groupId>punchclock</groupId><artifactId>legacy-export</artifactId><version>1</version>
+<dependencies>
+<dependency><groupId>com.healthmarketscience.jackcess</groupId><artifactId>jackcess</artifactId><version>4.0.5</version></dependency>
+<dependency><groupId>com.healthmarketscience.jackcess</groupId><artifactId>jackcess-encrypt</artifactId><version>4.0.2</version></dependency>
+</dependencies></project>
