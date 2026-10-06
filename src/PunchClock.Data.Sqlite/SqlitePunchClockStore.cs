@@ -185,7 +185,7 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
         await using var command = Command($"""
             SELECT {PunchColumns} FROM punch_effective_v
             WHERE employee_id = $id
-            ORDER BY occurred_utc DESC, id DESC
+            ORDER BY occurred_utc DESC, direction = 'IN' DESC, id DESC
             LIMIT 1;
             """);
         command.Parameters.AddWithValue("$id", employeeId);
@@ -226,7 +226,7 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
         await using var command = Command($"""
             SELECT {PunchColumns} FROM punch_effective_v
             WHERE employee_id = $id AND occurred_utc >= $from AND occurred_utc < $to
-            ORDER BY occurred_utc, id;
+            ORDER BY occurred_utc, direction = 'IN', id;
             """);
         command.Parameters.AddWithValue("$id", employeeId);
         command.Parameters.AddWithValue("$from", SqliteTime.ToText(fromUtc));
