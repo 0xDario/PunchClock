@@ -65,7 +65,9 @@ public static class FindingInfo
         FindingCode.DummyShift or
         FindingCode.OpenShiftCurrent or
         FindingCode.NoShifts or
-        FindingCode.IsActiveColumnMissing => FindingLevel.Info,
+        FindingCode.IsActiveColumnMissing or
+        FindingCode.PinLostLeadingZeros or
+        FindingCode.PinMayHaveLostLeadingZeros => FindingLevel.Info,
         _ => FindingLevel.Review,
     };
 
@@ -86,8 +88,8 @@ public static class FindingInfo
         FindingCode.DstNonexistentTime => "Time falls in the skipped hour when clocks go forward",
         FindingCode.CrossesDstChange => "Shift spans a daylight-saving change; real hours differ from the old report",
         FindingCode.PinMissing => "Employee has no PIN; a temporary PIN is issued at import",
-        FindingCode.PinLostLeadingZeros => "PIN is shorter than 3 digits, so Access dropped its leading zeros",
-        FindingCode.PinMayHaveLostLeadingZeros => "PIN is shorter than others; it may have started with 0, which Access dropped",
+        FindingCode.PinLostLeadingZeros => "PIN is shorter than 3 digits, so Access dropped its leading zeros; the kiosk still accepts the original",
+        FindingCode.PinMayHaveLostLeadingZeros => "PIN is shorter than others; if it started with 0, Access dropped it and the kiosk still accepts the original",
         FindingCode.FutureTime => "Skipped: shift is dated after the import (the PC clock was probably wrong)",
         FindingCode.MissingName => "Employee first or last name is empty",
         FindingCode.DuplicateName => "Another employee has the same name",
