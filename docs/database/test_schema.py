@@ -472,7 +472,15 @@ def main():
     fresh.act("employee", 1).blocked("no punches until the site time zone is configured",
                                      "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (1, 'IN', ?, 0, 'kiosk')",
                                      (now_utc(),), "not configured")
+    fresh_fp = fresh.one("SELECT fingerprint FROM schema_fingerprint_v")[0]
     fresh.conn.close()
+    crlf = Session(os.path.join(work, "crlf.db"))
+    crlf.act("user", 1, "initial schema")
+    crlf.conn.executescript("BEGIN;\n" + SCHEMA.replace("\n", "\r\n") + "\nCOMMIT;")
+    check("schema run with CRLF line endings: same fingerprint as LF",
+          "\r" in crlf.one("SELECT sql FROM sqlite_schema WHERE name = 'punch_bi'")[0]
+          and crlf.one("SELECT fingerprint FROM schema_fingerprint_v")[0] == fresh_fp)
+    crlf.conn.close()
 
     # --- Tamper scenarios, each on a fresh copy -----------------------------------------
     def tampered(label):
