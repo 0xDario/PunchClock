@@ -145,6 +145,27 @@ public sealed class LegacyImporterTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Refuses_until_the_site_time_zone_is_set_and_when_it_differs()
+    {
+        var plan = Plan();
+
+        await using (var fresh = new AuditSchemaDatabase(siteZone: null))
+        {
+            await fresh.InitializeAsync();
+            var unset = await Assert.ThrowsAsync<ImportRefusedException>(() => Importer().ImportAsync(plan, fresh.Database));
+            Assert.Contains("site time zone is not set", unset.Message);
+        }
+
+        await _db.SetSiteZoneAsync("Europe/Rome");
+        var other = await Assert.ThrowsAsync<ImportRefusedException>(() => Importer().ImportAsync(plan, _db.Database));
+        Assert.Contains("Europe/Rome", other.Message);
+        Assert.Equal(0L, await _db.ScalarAsync("SELECT count(*) FROM import_batch"));
+
+        await _db.SetSiteZoneAsync("Eastern Standard Time");
+        await Importer().ImportAsync(plan, _db.Database);
+    }
+
+    [Fact]
     public async Task Refuses_to_import_twice()
     {
         var plan = Plan();

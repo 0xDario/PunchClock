@@ -5,7 +5,8 @@ using PunchClock.Data.Sqlite;
 namespace PunchClock.Migration.Tests;
 
 /// <summary>A temp SQLite file with the app's migrations (the audit schema) applied.</summary>
-public sealed class AuditSchemaDatabase : IAsyncLifetime
+/// <param name="siteZone">Site time zone to set, as an admin would before importing; null leaves it unset.</param>
+public sealed class AuditSchemaDatabase(string? siteZone = "America/Toronto") : IAsyncLifetime
 {
     readonly string _directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "punchclock-migration-tests", Guid.NewGuid().ToString("N"));
 
@@ -14,7 +15,21 @@ public sealed class AuditSchemaDatabase : IAsyncLifetime
     /// <summary>Created and migrated exactly as the app and the importer do it.</summary>
     public SqliteDatabase Database { get; private set; } = null!;
 
-    public async ValueTask InitializeAsync() => Database = await PunchClockDatabase.OpenAndMigrateAsync(Path);
+    public async ValueTask InitializeAsync()
+    {
+        Database = await PunchClockDatabase.OpenAndMigrateAsync(Path);
+        if (siteZone is not null)
+            await SetSiteZoneAsync(siteZone);
+    }
+
+    public async Task SetSiteZoneAsync(string zone)
+    {
+        await using var c = await Database.OpenAsync(new AuditContext(Database.Client, AuditActor.System, "test setup"));
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = "UPDATE site_setting SET value = $zone WHERE key = 'time_zone_id';";
+        cmd.Parameters.AddWithValue("$zone", zone);
+        await cmd.ExecuteNonQueryAsync();
+    }
 
     // Through the app's own connection setup, so every function the schema's views call is registered.
     Task<SqliteConnection> OpenAsync() =>

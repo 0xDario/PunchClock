@@ -38,7 +38,7 @@ public sealed class LegacyImporter
         await using var connection = await database.OpenAsync(context, ct);
         await using var tx = connection.BeginTransaction(deferred: false);
 
-        await CheckTargetAsync(connection, tx, ct);
+        await CheckTargetAsync(connection, tx, plan.TimeZone, ct);
 
         var m = plan.Export.Manifest;
         var batchId = await InsertAsync(connection, tx, """
@@ -150,7 +150,7 @@ public sealed class LegacyImporter
         plan.Export.Manifest.Tables.Single(t => t.Name == name);
 
     /// <summary>The import is a one-time cutover into a fresh database.</summary>
-    static async Task CheckTargetAsync(SqliteConnection c, SqliteTransaction tx, CancellationToken ct)
+    static async Task CheckTargetAsync(SqliteConnection c, SqliteTransaction tx, TimeZoneInfo zone, CancellationToken ct)
     {
         var hasSchema = (long)(await ScalarAsync(c, tx,
             "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name IN ('import_batch', 'legacy_shift_raw', 'audit_log')", ct))!;
@@ -173,6 +173,24 @@ public sealed class LegacyImporter
             throw new ImportRefusedException(
                 $"This database already has {employees} employee(s) and {punches} punch(es). Import into a fresh database: " +
                 "rename punchclock.db (keep it), start the new app once to create a new one, then import.");
+
+        // The kiosk refuses punches until the site zone is set, and legacy history read in
+        // one zone with a kiosk in another goes unnoticed until the first DST change.
+        var site = await ScalarAsync(c, tx, "SELECT value FROM site_setting WHERE key = 'time_zone_id'", ct) as string;
+        if (site is null or "UNSET")
+            throw new ImportRefusedException(
+                "PunchClock's site time zone is not set yet. Start PunchClock, sign in as admin, set the time zone the old app's " +
+                "punches were recorded in on the Site tab, then run the import again.");
+        if (!SameZone(site, zone.Id))
+            throw new ImportRefusedException(
+                $"The punches would be read as {zone.Id}, but PunchClock's site time zone is {site}. Both must be the zone the old app " +
+                "ran in: fix the site time zone on the Site tab, or run the import with --time-zone set to it.");
+    }
+
+    static bool SameZone(string a, string b)
+    {
+        static string Windows(string id) => TimeZoneInfo.TryConvertIanaIdToWindowsId(id, out var w) ? w : id;
+        return string.Equals(Windows(a), Windows(b), StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
