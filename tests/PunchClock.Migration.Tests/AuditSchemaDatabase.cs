@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using PunchClock.Core.Audit;
 using PunchClock.Data.Sqlite;
 
 namespace PunchClock.Migration.Tests;
@@ -15,11 +16,13 @@ public sealed class AuditSchemaDatabase : IAsyncLifetime
 
     public async ValueTask InitializeAsync() => Database = await PunchClockDatabase.OpenAndMigrateAsync(Path);
 
+    // Through the app's own connection setup, so every function the schema's views call is registered.
+    Task<SqliteConnection> OpenAsync() =>
+        Database.OpenAsync(new AuditContext(Database.Client, AuditActor.Migration, "test read"));
+
     public async Task<object?> ScalarAsync(string sql)
     {
-        await using var c = new SqliteConnection($"Data Source={Path};Mode=ReadOnly;Pooling=False");
-        await c.OpenAsync();
-        c.CreateFunction("pc_sha256", (string? s) => s is null ? null : Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(s))), isDeterministic: true);
+        await using var c = await OpenAsync();
         await using var cmd = c.CreateCommand();
         cmd.CommandText = sql;
         return await cmd.ExecuteScalarAsync();
@@ -27,8 +30,7 @@ public sealed class AuditSchemaDatabase : IAsyncLifetime
 
     public async Task<List<object?[]>> RowsAsync(string sql)
     {
-        await using var c = new SqliteConnection($"Data Source={Path};Mode=ReadOnly;Pooling=False");
-        await c.OpenAsync();
+        await using var c = await OpenAsync();
         await using var cmd = c.CreateCommand();
         cmd.CommandText = sql;
         await using var r = await cmd.ExecuteReaderAsync();
