@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Data.Sqlite;
@@ -6,7 +7,7 @@ namespace PunchClock.Data.Sqlite;
 
 /// <summary>
 /// Opens connections to one SQLite file, configured the way the audit schema requires:
-/// <c>pc_sha256</c> and <c>pc_ctx</c> registered, foreign keys on, trusted schema on.
+/// <c>pc_sha256</c>, <c>pc_utc_offset</c> and <c>pc_ctx</c> registered, foreign keys on, trusted schema on.
 /// </summary>
 public sealed class SqliteDatabase
 {
@@ -62,6 +63,7 @@ public sealed class SqliteDatabase
     internal static async Task ConfigureAsync(SqliteConnection connection, AuditContext context, CancellationToken ct)
     {
         connection.CreateFunction("pc_sha256", (string? text) => Sha256Hex(text), isDeterministic: true);
+        connection.CreateFunction("pc_utc_offset", (string? zoneId, string? utc) => UtcOffsetMinutes(zoneId, utc));
         connection.CreateFunction("pc_ctx", (string name) => context.Get(name));
 
         await using var pragma = connection.CreateCommand();
@@ -75,6 +77,24 @@ public sealed class SqliteDatabase
             PRAGMA trusted_schema = ON;
             """;
         await pragma.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>
+    /// Minutes east of UTC for a Windows time zone id at a UTC instant; null (never an exception,
+    /// which would abort the statement with an unhelpful message) for an unknown zone or a null
+    /// or unparseable argument. Windows ids also resolve on Linux and macOS through ICU.
+    /// </summary>
+    internal static long? UtcOffsetMinutes(string? zoneId, string? utc)
+    {
+        if (zoneId is null || utc is null
+            || !TimeZoneInfo.TryFindSystemTimeZoneById(zoneId, out var zone)
+            || !DateTimeOffset.TryParse(utc, CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var instant))
+        {
+            return null;
+        }
+
+        return (long)zone.GetUtcOffset(instant).TotalMinutes;
     }
 
     internal static string? Sha256Hex(string? text) =>

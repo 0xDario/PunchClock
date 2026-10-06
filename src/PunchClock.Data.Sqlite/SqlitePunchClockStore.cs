@@ -187,6 +187,35 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
         return MapPunch(reader);
     }
 
+    public async Task<Punch?> FindEffectivePunchAsync(long punchId, CancellationToken ct = default)
+    {
+        await using var command = Command($"SELECT {PunchColumns} FROM punch_effective_v WHERE id = $id;");
+        command.Parameters.AddWithValue("$id", punchId);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? MapPunch(reader) : null;
+    }
+
+    public async Task<IReadOnlyList<Punch>> ListEffectivePunchesAsync(
+        long employeeId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default)
+    {
+        await using var command = Command($"""
+            SELECT {PunchColumns} FROM punch_effective_v
+            WHERE employee_id = $id AND occurred_utc >= $from AND occurred_utc < $to
+            ORDER BY occurred_utc, id;
+            """);
+        command.Parameters.AddWithValue("$id", employeeId);
+        command.Parameters.AddWithValue("$from", SqliteTime.ToText(fromUtc));
+        command.Parameters.AddWithValue("$to", SqliteTime.ToText(toUtc));
+        return await ReadAllAsync(command, MapPunch, ct);
+    }
+
+    public async Task<IReadOnlyList<(long PunchId, string Kind)>> ListPunchExceptionsAsync(long employeeId, CancellationToken ct = default)
+    {
+        await using var command = Command("SELECT punch_id, kind FROM punch_exception_v WHERE employee_id = $id;");
+        command.Parameters.AddWithValue("$id", employeeId);
+        return await ReadAllAsync(command, r => (r.GetInt64(0), r.GetString(1)), ct);
+    }
+
     public async Task<long> AddCorrectionAsync(NewCorrection correction, CancellationToken ct = default)
     {
         await using var command = Command("""

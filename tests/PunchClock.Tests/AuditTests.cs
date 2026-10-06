@@ -40,7 +40,8 @@ public sealed class AuditTests : DatabaseTest
         var employee = await Db.AddEmployeeAsync();
         await Db.Punches.PunchAsync(employee, "1234", PunchDirection.In);
         await Db.Punches.PunchAsync(employee, "9999", PunchDirection.Out);
-        await Db.Site.SetTimeZoneAsync(admin, TimeZoneInfo.Utc.Id);
+        await Db.Site.SetTimeZoneAsync(admin, OperatingSystem.IsWindows() ? "Eastern Standard Time" : "America/Toronto");
+        await Db.Punches.PunchAsync(employee, "1234", PunchDirection.Out);
 
         var actions = await Db.ColumnAsync("""
             SELECT action || ':' || COALESCE(table_name, '-') || ':' || actor_kind || ':' || actor_id || ':' || client

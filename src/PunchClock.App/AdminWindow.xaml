@@ -94,6 +94,57 @@
                     </ListView>
                 </DockPanel>
             </TabItem>
+            <TabItem x:Name="CorrectionsTab" Header="_Corrections">
+                <DockPanel Margin="16">
+                    <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ComboBox x:Name="CorrectionEmployee" Grid.Column="0" DisplayMemberPath="DisplayName" Padding="6" Margin="0,0,8,0"
+                                  ToolTip="Employee" SelectionChanged="CorrectionFilter_Changed" />
+                        <DatePicker x:Name="CorrectionFrom" Grid.Column="1" Margin="0,0,8,0" ToolTip="From (site date)" SelectedDateChanged="CorrectionFilter_Changed" />
+                        <DatePicker x:Name="CorrectionTo" Grid.Column="2" Margin="0,0,8,0" ToolTip="To (site date, inclusive)" SelectedDateChanged="CorrectionFilter_Changed" />
+                        <Button Grid.Column="3" Content="_Show" Click="ShowPunches_Click" Padding="12,4" />
+                    </Grid>
+                    <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="90" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="CorrectionDirection" Grid.Column="0" Padding="6" Margin="0,0,8,0" SelectedIndex="0" ToolTip="Direction">
+                                <ComboBoxItem Content="In" />
+                                <ComboBoxItem Content="Out" />
+                            </ComboBox>
+                            <DatePicker x:Name="CorrectionDate" Grid.Column="1" Margin="0,0,8,0" ToolTip="Date (site time)" />
+                            <TextBox x:Name="CorrectionTime" Grid.Column="2" Padding="6" Margin="0,0,8,0" ToolTip="Time (site time), e.g. 17:30" />
+                            <TextBox x:Name="CorrectionReason" Grid.Column="3" Padding="6" ToolTip="Reason, at least 10 characters (kept in the audit log)" />
+                        </Grid>
+                        <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,4,0,8"
+                                   Text="Direction, date and time in the site time zone, reason. Corrections never erase a punch: the original stays in the audit log." />
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Add _missing punch" Click="AddPunch_Click" Padding="12,4" Margin="0,0,8,0" />
+                            <Button Content="C_hange selected" Click="AdjustPunch_Click" Padding="12,4" Margin="0,0,8,0" />
+                            <Button Content="_Void selected" Click="VoidPunch_Click" Padding="12,4" />
+                        </StackPanel>
+                    </StackPanel>
+                    <ListView x:Name="PunchList" SelectionChanged="PunchList_SelectionChanged">
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Header="Site time" DisplayMemberBinding="{Binding Punch.OccurredAtLocal, StringFormat='ddd yyyy-MM-dd HH:mm:ss'}" Width="190" />
+                                <GridViewColumn Header="Direction" DisplayMemberBinding="{Binding Punch.Direction}" Width="80" />
+                                <GridViewColumn Header="Source" DisplayMemberBinding="{Binding Punch.Source}" Width="110" />
+                                <GridViewColumn Header="Issue" DisplayMemberBinding="{Binding Issue}" Width="160" />
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+                </DockPanel>
+            </TabItem>
         </TabControl>
     </DockPanel>
 </Window>
