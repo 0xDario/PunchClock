@@ -366,3 +366,9 @@ FodyWeavers.xsd
 *.db-wal
 *.db-shm
 TestResults/
+
+# Legacy Access export output (contains plaintext PINs) and fetched jars
+legacy-export-*/
+legacy-export-*.zip
+migration/legacy-export/jackcess/lib/
+__pycache__/
