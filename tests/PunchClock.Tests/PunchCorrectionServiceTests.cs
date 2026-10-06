@@ -61,8 +61,7 @@ public sealed class PunchCorrectionServiceTests : DatabaseTest
         var admin = await Db.AddAdminAsync();
         var manager = await Db.AddManagerAsync();
         var id = await Db.AddEmployeeAsync();
-        await Db.ExecuteAsync(AuditActor.ForUser(admin.Id),
-            "UPDATE app_user SET employee_id = $e WHERE id = $m;", ("$e", id), ("$m", manager.Id));
+        await Db.Accounts.SetEmployeeLinkAsync(admin, manager.Id, id, "Also works shifts");
         var linked = manager with { EmployeeId = id };
         var other = await Db.AddEmployeeAsync(first: "Other");
         var earlier = LocalNow(TimeSpan.FromHours(1));
@@ -80,11 +79,35 @@ public sealed class PunchCorrectionServiceTests : DatabaseTest
     [Fact]
     public void Local_times_skipped_by_dst_are_invalid_and_repeated_ones_take_the_first_occurrence()
     {
+        var repeated = new DateTime(2025, 11, 2, 1, 30, 0);
         Assert.Null(PunchCorrectionService.ToUtc(new DateTime(2026, 3, 8, 2, 30, 0), Zone));
-        Assert.Equal(new DateTimeOffset(2025, 11, 2, 5, 30, 0, TimeSpan.Zero),
-            PunchCorrectionService.ToUtc(new DateTime(2025, 11, 2, 1, 30, 0), Zone));
+        Assert.Equal(new DateTimeOffset(2025, 11, 2, 5, 30, 0, TimeSpan.Zero), PunchCorrectionService.ToUtc(repeated, Zone));
+        Assert.Equal(new DateTimeOffset(2025, 11, 2, 6, 30, 0, TimeSpan.Zero), PunchCorrectionService.ToUtc(repeated, Zone, -300));
+        Assert.Equal(new DateTimeOffset(2025, 11, 2, 5, 30, 0, TimeSpan.Zero), PunchCorrectionService.ToUtc(repeated, Zone, 330));
+        Assert.Equal(new DateTimeOffset(2026, 7, 1, 13, 0, 0, TimeSpan.Zero),
+            PunchCorrectionService.ToUtc(new DateTime(2026, 7, 1, 9, 0, 0), Zone, -300));
         Assert.Equal(new DateTimeOffset(2026, 7, 1, 13, 0, 0, TimeSpan.Zero),
             PunchCorrectionService.ToUtc(new DateTime(2026, 7, 1, 9, 0, 0), Zone));
+    }
+
+    [Fact]
+    public async Task Adjusting_a_punch_in_the_repeated_hour_keeps_its_occurrence()
+    {
+        var manager = await Db.AddManagerAsync();
+        var id = await Db.AddEmployeeAsync();
+        // 01:30 EST on the night clocks go back: the second 01:30, offset -300.
+        var second = new DateTimeOffset(2025, 11, 2, 6, 30, 0, TimeSpan.Zero);
+        await Db.CorrectAsync(new NewCorrection(
+            CorrectionAction.Add, id, null, PunchDirection.Out, second, -300, "Punch-out from the paper log", manager.Id));
+        var original = (await Db.Corrections.ListAsync(id, second.AddHours(-1), second.AddHours(1))).Single().Punch;
+
+        Assert.Equal(CorrectionResult.Corrected, await Db.Corrections.AdjustAsync(
+            manager, original.Id, PunchDirection.In, original.OccurredAtLocal.DateTime.AddMinutes(15), "Was a punch-in, 15 min later"));
+
+        var adjusted = (await Db.Corrections.ListAsync(id, second.AddHours(-2), second.AddHours(2))).Single().Punch;
+        Assert.Equal(second.AddMinutes(15), adjusted.OccurredAtUtc);
+        Assert.Equal(-300, adjusted.UtcOffsetMinutes);
+        Assert.Empty(await Db.VerifyAsync());
     }
 
     [Fact]

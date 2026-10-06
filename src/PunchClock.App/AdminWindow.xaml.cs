@@ -16,6 +16,12 @@ namespace PunchClock.App;
 /// </summary>
 public partial class AdminWindow : Window
 {
+    /// <summary>An account list row with the linked employee's name.</summary>
+    public sealed record AccountRow(AppUser User, string Employee);
+
+    /// <summary>An employee-link choice; a null id means no link.</summary>
+    public sealed record EmployeeChoice(long? Id, string Label);
+
     private readonly AppServices _services;
     private readonly AppUser _admin;
     private bool _signedOut;
@@ -50,12 +56,23 @@ public partial class AdminWindow : Window
         var zoneId = await _services.Site.GetTimeZoneIdAsync();
         TimeZoneBox.SelectedValue = zoneId ?? TimeZoneInfo.Local.Id;
         CurrentZone.Text = zoneId is null
-            ? $"Not set. New punches use this computer's zone ({TimeZoneInfo.Local.Id}) until a zone is saved."
+            ? "Not set. Nobody can punch until a site time zone is saved."
             : $"Saved: {zoneId}";
 
-        AccountList.ItemsSource = await _services.Accounts.ListAsync();
         var employees = await _services.Employees.ListAsync(activeOnly: false);
         EmployeeList.ItemsSource = employees;
+
+        var names = employees.ToDictionary(e => e.Id, e => e.DisplayName);
+        AccountList.ItemsSource = (await _services.Accounts.ListAsync())
+            .Select(u => new AccountRow(u, u.EmployeeId is { } id ? names.GetValueOrDefault(id, $"#{id}") : ""))
+            .ToList();
+        var choices = employees.Where(e => e.IsActive)
+            .Select(e => new EmployeeChoice(e.Id, e.LegacyId is { } legacy ? $"{e.DisplayName} (#{legacy})" : e.DisplayName))
+            .Prepend(new EmployeeChoice(null, "(does not punch)"))
+            .ToList();
+        AccountLinkEmployee.ItemsSource = choices;
+        NewAccountEmployee.ItemsSource = choices;
+        NewAccountEmployee.SelectedIndex = 0;
 
         var selectedId = (CorrectionEmployee.SelectedItem as Employee)?.Id;
         CorrectionEmployee.ItemsSource = employees;
@@ -214,7 +231,7 @@ public partial class AdminWindow : Window
 
     private async Task SetAccountActiveAsync(bool isActive)
     {
-        if (AccountList.SelectedItem is not AppUser target)
+        if ((AccountList.SelectedItem as AccountRow)?.User is not { } target)
         {
             Show("Select an account first.", isError: true);
             return;
@@ -232,6 +249,104 @@ public partial class AdminWindow : Window
             }, isError: result != AccountChangeResult.Changed);
         });
     }
+
+    private void AccountList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if ((AccountList.SelectedItem as AccountRow)?.User is { } user)
+        {
+            AccountLinkEmployee.SelectedItem = AccountLinkEmployee.Items.Cast<EmployeeChoice>().FirstOrDefault(c => c.Id == user.EmployeeId);
+        }
+    }
+
+    private async void SetAccountLink_Click(object sender, RoutedEventArgs e)
+    {
+        if ((AccountList.SelectedItem as AccountRow)?.User is not { } target || AccountLinkEmployee.SelectedItem is not EmployeeChoice link)
+        {
+            Show("Select an account and the employee they punch as.", isError: true);
+            return;
+        }
+
+        var reason = AccountReason.Text;
+        await RunAsync(async () =>
+        {
+            var result = await _services.Accounts.SetEmployeeLinkAsync(_admin, target.Id, link.Id, reason);
+            await ReloadAsync();
+            Show(result switch
+            {
+                AccountChangeResult.Changed => link.Id is null
+                    ? $"{target.Username} is no longer linked to an employee."
+                    : $"{target.Username} now punches as {link.Label} and cannot correct those punches.",
+                _ => AccountMessage(result),
+            }, isError: result != AccountChangeResult.Changed);
+        });
+    }
+
+    private async void ResetAccountPassword_Click(object sender, RoutedEventArgs e)
+    {
+        if ((AccountList.SelectedItem as AccountRow)?.User is not { } target)
+        {
+            Show("Select an account first.", isError: true);
+            return;
+        }
+
+        var (password, reason) = (AccountResetPassword.Password, AccountReason.Text);
+        await RunAsync(async () =>
+        {
+            var result = await Task.Run(() => _services.Accounts.ResetPasswordAsync(_admin, target.Id, password, reason));
+            if (result == AccountChangeResult.Changed)
+            {
+                AccountResetPassword.Clear();
+            }
+
+            await ReloadAsync();
+            Show(result == AccountChangeResult.Changed
+                ? $"{target.Username}'s password was reset. They must choose their own at their next sign-in."
+                : AccountMessage(result), isError: result != AccountChangeResult.Changed);
+        });
+    }
+
+    private async void AddAccount_Click(object sender, RoutedEventArgs e)
+    {
+        var (username, name, password) = (NewAccountUsername.Text, NewAccountName.Text, NewAccountPassword.Password);
+        var role = NewAccountRole.SelectedIndex == 1 ? UserRole.Admin : UserRole.Manager;
+        var employeeId = (NewAccountEmployee.SelectedItem as EmployeeChoice)?.Id;
+        await RunAsync(async () =>
+        {
+            var result = await Task.Run(() => _services.Accounts.CreateAccountAsync(_admin, username, name, role, password, employeeId));
+            if (result == AccountChangeResult.Changed)
+            {
+                NewAccountUsername.Clear();
+                NewAccountName.Clear();
+                NewAccountPassword.Clear();
+            }
+
+            await ReloadAsync();
+            Show(result == AccountChangeResult.Changed
+                ? $"{username.Trim()} added. They must choose their own password at first sign-in."
+                : AccountMessage(result), isError: result != AccountChangeResult.Changed);
+        });
+    }
+
+    private async void ChangeMyPassword_Click(object sender, RoutedEventArgs e)
+    {
+        if (new ChangePasswordWindow(_services.Accounts, _admin, forced: false) { Owner = this }.ShowDialog() == true)
+        {
+            Show("Your password was changed.");
+        }
+
+        await RunAsync(ReloadAsync);
+    }
+
+    private static string AccountMessage(AccountChangeResult result) => result switch
+    {
+        AccountChangeResult.NotAllowed => "Not allowed: fill in every field, and your own account and service accounts cannot be changed here.",
+        AccountChangeResult.ReasonRequired => "Enter a reason first.",
+        AccountChangeResult.PasswordRejected => $"Passwords must be at least {AccountService.MinPasswordLength} characters.",
+        AccountChangeResult.UsernameTaken => "That username is already in use.",
+        AccountChangeResult.EmployeeNotFound => "That employee no longer exists.",
+        AccountChangeResult.EmployeeAlreadyLinked => "That employee is already linked to another account.",
+        _ => "That account no longer exists.",
+    };
 
     private async void DeactivateEmployee_Click(object sender, RoutedEventArgs e) => await SetEmployeeActiveAsync(false);
 
