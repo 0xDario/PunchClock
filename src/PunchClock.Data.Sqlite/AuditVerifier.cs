@@ -16,23 +16,33 @@ public sealed class AuditIntegrityException(IReadOnlyList<string> problems) : Ex
 /// the hash chain, rows against their audited images, before/after continuity, events the
 /// trigger path cannot produce, and the payroll admission rules re-derived from the log
 /// (which catches data let in while a trigger was dropped and then recreated identically,
-/// something the schema fingerprint cannot see). <c>verify_clock_v</c> is a warning, not proof
-/// of tampering, so it is not run here.
+/// something the schema fingerprint cannot see). <see cref="WarningViews"/> flag rows for an
+/// admin to review (a clock that ran backwards, offsets re-derived with today's time zone data)
+/// that are not proof of tampering, so they never stop the app.
 /// </summary>
 public static class AuditVerifier
 {
     public static readonly IReadOnlyList<string> Views =
         ["verify_chain_v", "verify_drift_v", "verify_continuity_v", "verify_history_v", "verify_rules_v"];
 
+    public static readonly IReadOnlyList<string> WarningViews = ["verify_clock_v", "verify_offset_v"];
+
     /// <returns>One line per problem, prefixed with the view that found it; empty when intact.</returns>
-    public static async Task<IReadOnlyList<string>> FindProblemsAsync(SqliteDatabase database, CancellationToken ct = default)
+    public static Task<IReadOnlyList<string>> FindProblemsAsync(SqliteDatabase database, CancellationToken ct = default) =>
+        RunAsync(database, Views, ct);
+
+    /// <returns>One line per row to review, prefixed with the view that found it.</returns>
+    public static Task<IReadOnlyList<string>> FindWarningsAsync(SqliteDatabase database, CancellationToken ct = default) =>
+        RunAsync(database, WarningViews, ct);
+
+    private static async Task<IReadOnlyList<string>> RunAsync(SqliteDatabase database, IReadOnlyList<string> views, CancellationToken ct)
     {
         await using var connection = await database.OpenAsync(ct: ct);
 
         // One read snapshot for all views; under WAL it does not block kiosk writes.
         await using var transaction = connection.BeginTransaction(deferred: true);
         var problems = new List<string>();
-        foreach (var view in Views)
+        foreach (var view in views)
         {
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;

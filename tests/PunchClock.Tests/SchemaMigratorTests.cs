@@ -69,6 +69,17 @@ public sealed class SchemaMigratorTests : DatabaseTest
     }
 
     [Fact]
+    public async Task Inline_fingerprint_equals_the_schema_view()
+    {
+        // The schema's audit_checkpoint and SCHEMA_MIGRATE records use the view; the app's checks
+        // use the inline copy. They must agree or a checkpoint would fail the app's check.
+        await using var connection = await Db.Database.OpenAsync();
+        Assert.Equal(
+            await Db.ScalarAsync<string>("SELECT fingerprint FROM schema_fingerprint_v;"),
+            await SchemaMigrator.ReadFingerprintAsync(connection, null, default));
+    }
+
+    [Fact]
     public async Task Dropped_trigger_stops_startup()
     {
         // DDL needs no actor, so a generic SQLite tool can do this; the migration rows still look fine.
