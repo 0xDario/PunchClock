@@ -130,4 +130,48 @@ public sealed class AccountServiceTests : DatabaseTest
 
         await Assert.ThrowsAsync<SignInLockedException>(() => Db.Accounts.SignInAsync("GHOST", "whatever password"));
     }
+
+    [Fact]
+    public async Task Failed_sign_ins_keep_known_usernames_but_never_what_was_typed_for_unknown_ones()
+    {
+        await Db.AddAdminAsync();
+
+        Assert.Null(await Db.Accounts.SignInAsync("Owner", "wrong password!"));
+        Assert.Null(await Db.Accounts.SignInAsync("hunter2 my real password", ""));
+
+        var details = await Db.ScalarAsync<string>(
+            "SELECT json_group_array(json(after_json)) FROM audit_log WHERE action = 'AUTH_LOGIN_FAILED';");
+        Assert.Contains("\"username\":\"owner\"", details);
+        Assert.DoesNotContain("hunter2", details);
+        Assert.Contains(AccountService.UsernameDigest("HUNTER2 my real password "), details);
+    }
+
+    [Fact]
+    public async Task Every_failed_sign_in_costs_one_password_check_so_timing_reveals_no_usernames()
+    {
+        var admin = await Db.AddAdminAsync();
+        await Db.Accounts.SetActiveAsync(admin, (await Db.AddManagerAsync()).Id, isActive: false, "Left the company");
+        var hasher = new CountingHasher();
+        var accounts = new AccountService(Db.Store, hasher);
+
+        foreach (var username in new[] { "owner", "nobody", "manager", "system" })
+        {
+            hasher.Verifications = 0;
+            Assert.Null(await accounts.SignInAsync(username, "wrong password!"));
+            Assert.Equal(1, hasher.Verifications);
+        }
+    }
+
+    private sealed class CountingHasher : PunchClock.Core.Security.IPinHasher
+    {
+        public int Verifications { get; set; }
+
+        public string Hash(string pin) => TestDatabase.FastHasher.Hash(pin);
+
+        public bool Verify(string pin, string encodedHash)
+        {
+            Verifications++;
+            return TestDatabase.FastHasher.Verify(pin, encodedHash);
+        }
+    }
 }
