@@ -13,6 +13,7 @@
 
         <TabControl>
             <TabItem x:Name="SiteTab" Header="_Site">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="16">
                     <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
                                Text="Punches store UTC plus this zone's offset at the moment of the punch. Changing the zone affects new punches only." />
@@ -20,7 +21,18 @@
                     <ComboBox x:Name="TimeZoneBox" DisplayMemberPath="DisplayName" SelectedValuePath="Id" Padding="6" />
                     <TextBlock x:Name="CurrentZone" Foreground="Gray" Margin="0,6,0,0" />
                     <Button Content="Save _time zone" Click="SaveTimeZone_Click" HorizontalAlignment="Left" Padding="12,4" Margin="0,12,0,0" />
+
+                    <TextBlock Text="Backup" FontWeight="SemiBold" Margin="0,24,0,4" />
+                    <TextBlock TextWrapping="Wrap" Foreground="Gray"
+                               Text="Saves a complete copy of the database, checks it, and records it in the audit log. Keep copies off this PC: they hold every PIN and password hash." />
+                    <Button Content="_Back up database..." Click="Backup_Click" HorizontalAlignment="Left" Padding="12,4" Margin="0,8,0,0" />
+                    <TextBlock x:Name="BackupResult" TextWrapping="Wrap" Margin="0,6,0,0" />
+
+                    <TextBlock Text="Records to review" FontWeight="SemiBold" Margin="0,24,0,4" />
+                    <TextBlock x:Name="WarningSummary" TextWrapping="Wrap" Foreground="Gray" />
+                    <ListBox x:Name="WarningList" MaxHeight="140" Margin="0,6,0,0" Visibility="Collapsed" />
                 </StackPanel>
+                </ScrollViewer>
             </TabItem>
 
             <TabItem x:Name="AccountsTab" Header="_Accounts">
@@ -188,6 +200,62 @@
                             </GridView>
                         </ListView.View>
                     </ListView>
+                </DockPanel>
+            </TabItem>
+
+            <TabItem x:Name="ReportsTab" Header="_Reports">
+                <DockPanel Margin="16">
+                    <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <DatePicker x:Name="ReportFrom" Grid.Column="0" Margin="0,0,8,0" ToolTip="First day of the pay period (site date)" />
+                        <DatePicker x:Name="ReportTo" Grid.Column="1" Margin="0,0,8,0" ToolTip="Last day of the pay period (site date, inclusive)" />
+                        <Button Grid.Column="2" Content="R_un report" Click="RunReport_Click" Padding="12,4" />
+                        <TextBlock x:Name="ReportTotal" Grid.Column="3" VerticalAlignment="Center" Margin="12,0,0,0" />
+                    </Grid>
+                    <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+                        <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,8"
+                                   Text="Hours follow the old app's report: a shift counts in the period it starts in, if it also ends before the period does. Minutes are counted on the wall clock, so a shift across a daylight-saving change shows its elapsed hours separately. Every export is recorded in the audit log with the file's fingerprint." />
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Export _pay report CSV..." Click="ExportPayReport_Click" Padding="12,4" Margin="0,0,8,0" />
+                            <Button Content="Export pu_nches CSV..." Click="ExportPunches_Click" Padding="12,4" Margin="0,0,8,0" />
+                            <Button Content="Export c_orrections CSV..." Click="ExportCorrections_Click" Padding="12,4" />
+                        </StackPanel>
+                    </StackPanel>
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="2*" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <ListView x:Name="PayLines" Grid.Row="0">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Employee" DisplayMemberBinding="{Binding Name}" Width="200" />
+                                    <GridViewColumn Header="Legacy ID" DisplayMemberBinding="{Binding LegacyId}" Width="80" />
+                                    <GridViewColumn Header="Shifts" DisplayMemberBinding="{Binding Shifts}" Width="60" />
+                                    <GridViewColumn Header="Hours" DisplayMemberBinding="{Binding Hours, StringFormat='0.00'}" Width="70" />
+                                    <GridViewColumn Header="Elapsed hours" DisplayMemberBinding="{Binding ElapsedHours, StringFormat='0.00'}" Width="110" />
+                                    <GridViewColumn Header="Not counted" DisplayMemberBinding="{Binding NotCounted}" Width="100" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                        <TextBlock Grid.Row="1" Text="Shifts not counted in this period" FontWeight="SemiBold" Margin="0,12,0,4" />
+                        <ListView x:Name="UncountedShifts" Grid.Row="2">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Employee" DisplayMemberBinding="{Binding Name}" Width="170" />
+                                    <GridViewColumn Header="In" DisplayMemberBinding="{Binding InLocal, StringFormat='ddd yyyy-MM-dd HH:mm'}" Width="160" />
+                                    <GridViewColumn Header="Out" DisplayMemberBinding="{Binding OutLocal, StringFormat='ddd yyyy-MM-dd HH:mm'}" Width="160" />
+                                    <GridViewColumn Header="Why" DisplayMemberBinding="{Binding Reason}" Width="360" />
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </Grid>
                 </DockPanel>
             </TabItem>
         </TabControl>
