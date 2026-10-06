@@ -204,6 +204,8 @@ internal static class Program
         Console.WriteLine($"  Hours (old report rules) {ImportReport.Hours(t.TotalWallClock)}");
         Console.WriteLine($"  Time zone                {zone.Id} ({zoneSource})");
         Console.WriteLine($"  Needs review afterwards  {review} item(s), listed in the report");
+        if (!plan.Export.SnapshotVerified)
+            Console.WriteLine("  CANNOT IMPORT            the export has no matching copy of PunchClock.accdb");
         var future = plan.Findings.Count(f => f.Code == FindingCode.FutureTime);
         if (future > 0)
             Console.WriteLine($"  CANNOT IMPORT            {future} shift(s) dated after today; see the report");

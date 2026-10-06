@@ -30,7 +30,7 @@ public sealed class LegacyExportTests : IDisposable
         Assert.Null(export.Shifts[2].TimeOut);
         Assert.Equal(new DateTime(2025, 1, 7, 16, 30, 0), export.Shifts[1].TimeOut);
         Assert.Equal("America/Toronto", export.Manifest.SiteTimeZoneId);
-        Assert.False(export.SnapshotVerified);
+        Assert.True(export.SnapshotVerified);
     }
 
     [Fact]

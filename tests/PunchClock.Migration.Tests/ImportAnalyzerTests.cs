@@ -51,6 +51,22 @@ public sealed class ImportAnalyzerTests : IDisposable
     }
 
     [Fact]
+    public void A_dummy_shift_whose_clock_reads_straddle_a_second_is_still_a_dummy()
+    {
+        _export.Employee(1, "Ann", "Lee")
+            .Shift(10, 1, "2025-01-06 08:00:00", "2025-01-06 08:00:01")
+            .Shift(11, 1, "2025-01-07 08:00:00.000", "2025-01-07 08:00:00.400");
+        _export.Employee(2, "Bo", "Park")
+            .Shift(20, 2, "2025-01-06 09:00:00", "2025-01-06 09:00:02");
+
+        var plan = Analyze();
+
+        Assert.Equal([FindingCode.DummyShift], Codes(plan, 10));
+        Assert.Equal([FindingCode.ZeroLengthShift], Codes(plan, 11));
+        Assert.Empty(Codes(plan, 20));
+    }
+
+    [Fact]
     public void Flags_a_shift_dated_after_the_import_and_the_importer_refuses_it()
     {
         _export.Employee(1, "Ann", "Lee")
