@@ -85,7 +85,7 @@ public sealed class PunchService(IPunchClockStore store, IPinHasher pinHasher)
             return PunchResult.Reject(PunchRejection.TooManyAttempts);
         }
 
-        if (!pinHasher.Verify(pin, employee.PinHash))
+        if (!PinPolicy.Matches(pinHasher, employee, pin))
         {
             await uow.RecordEventAsync(AuditEvent.AuthPinFailed, ct: ct);
             await uow.CommitAsync(ct);

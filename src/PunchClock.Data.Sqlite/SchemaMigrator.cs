@@ -96,7 +96,7 @@ public sealed partial class SchemaMigrator
                 checksum       TEXT NOT NULL,
                 applied_at_utc TEXT NOT NULL
             ) STRICT;
-            """, ct);
+            """.ReplaceLineEndings("\n"), ct);
 
         var applied = await ReadAppliedAsync(connection, transaction, ct);
         foreach (var (version, checksum) in applied)
