@@ -74,7 +74,7 @@ What the import does with the old data, in short:
 
 - Every employee and shift keeps its old ID, and every exported row is stored unchanged in the new database as evidence (except PINs, which are stored only as hashes).
 - Times are converted from the PC's local time to UTC with the recorded time zone, so shifts across a daylight-saving change get their true length. Times in the repeated or skipped hour are flagged.
-- Skipped, with the raw row kept and the reason recorded: the zero-length shift the old app added for every new employee, shifts whose employee no longer exists (the old report never counted them either), and shifts with no punch-in time.
+- Skipped, with the raw row kept and the reason recorded: the zero-length shift the old app added for every new employee, shifts whose employee no longer exists (the old report never counted them either), shifts with no punch-in time, and shifts dated after the import (a PC clock set wrong; the new app refuses future punches).
 - Imported and flagged for a manager to fix through the new app's audited corrections: missed punch-outs, punch-outs before punch-ins, shifts over 16 hours, overlaps, rows added out of order (a sign of hand edits in Access).
 - The whole import is one audited event as the `migration` account, carrying the old file's SHA-256 and row counts. It is all or nothing, it refuses to run twice, and it refuses a database that already has employees or punches.
 

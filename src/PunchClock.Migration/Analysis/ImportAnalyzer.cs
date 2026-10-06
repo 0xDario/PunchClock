@@ -16,9 +16,9 @@ public static class ImportAnalyzer
     public static readonly TimeSpan ZeroLengthBound = TimeSpan.FromSeconds(1);
 
     /// <summary>
-    /// NewStaffForm read DateTime.Now twice for its dummy row, so it can end a few ms after it
-    /// starts, or a whole second later when the reads straddle a second and Access drops the
-    /// fraction. An employee's first shift under 2 s is that dummy; no real shift is that short.
+    /// NewStaffForm read DateTime.Now twice for its dummy row. Every dummy in the known copies
+    /// is exactly 0 s, but two separate reads could differ. An employee's first shift under 2 s
+    /// is treated as that dummy (#4's validator uses the same rule); no real shift is that short.
     /// </summary>
     public static readonly TimeSpan DummyBound = TimeSpan.FromSeconds(2);
 
@@ -115,12 +115,23 @@ public static class ImportAnalyzer
             if (d.Flags.Any(FindingInfo.Skips))
                 continue;
 
-            d.In = Resolve(tin, timeZone, c => Flag(d, c, $"Punch in {Fmt(tin)}."));
-            if (s.TimeOut is { } t)
-                d.Out = Resolve(t, timeZone, c => Flag(d, c, $"Punch out {Fmt(t)}."));
-            // Usually a PC clock set wrong once. The database refuses punches after its own clock.
-            if (d.In.Value.Utc > now || d.Out?.Utc > now)
-                Flag(d, FindingCode.FutureTime, $"{Fmt(tin)} to {(s.TimeOut is { } f ? Fmt(f) : "(open)")} is after the import time.");
+            var dst = new List<(FindingCode Code, string Detail)>();
+            var rin = Resolve(tin, timeZone, c => dst.Add((c, $"Punch in {Fmt(tin)}.")));
+            ResolvedTime? rout = s.TimeOut is { } t ? Resolve(t, timeZone, c => dst.Add((c, $"Punch out {Fmt(t)}."))) : null;
+
+            // Usually a PC clock set wrong once. The database refuses punches after its own
+            // clock, so the shift is skipped with its raw row kept, like the rows above.
+            if (rin.Utc > now || rout?.Utc > now)
+            {
+                Flag(d, FindingCode.FutureTime,
+                    $"{Fmt(tin)} to {(s.TimeOut is { } f ? Fmt(f) : "(open)")} is after the import time. Raw row kept.");
+                continue;
+            }
+
+            d.In = rin;
+            d.Out = rout;
+            foreach (var (code, detail) in dst)
+                Flag(d, code, detail);
         }
 
         // Every shift row counts here, skipped ones too: the old app read state from the row, not its hours.
