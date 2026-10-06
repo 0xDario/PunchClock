@@ -7,6 +7,9 @@ namespace PunchClock.Core.Punches;
 
 public enum PunchRejection
 {
+    /// <summary>No site time zone is configured yet, so no offset can be recorded. An admin sets it.</summary>
+    SiteTimeZoneNotSet,
+
     EmployeeNotFound,
     EmployeeInactive,
     InvalidPin,
@@ -53,6 +56,14 @@ public sealed class PunchService(IPunchClockStore store, IPinHasher pinHasher, T
         // The unit of work holds the database write lock, so the state check and the insert are
         // atomic even if two kiosks (or a double-click) race on the same employee.
         await using var uow = await store.BeginAsync(ct);
+
+        // The schema refuses punches until the site zone is set and checks every offset against
+        // it, so there is no machine-zone fallback here.
+        var zoneId = await uow.GetSettingAsync(SiteSettingKeys.TimeZoneId, ct);
+        if (zoneId is null or SiteSettingKeys.Unset || !TimeZoneInfo.TryFindSystemTimeZoneById(zoneId, out var zone))
+        {
+            return PunchResult.Reject(PunchRejection.SiteTimeZoneNotSet);
+        }
 
         var employee = await uow.FindEmployeeAsync(employeeId, ct);
         if (employee is null)
@@ -105,7 +116,6 @@ public sealed class PunchService(IPunchClockStore store, IPinHasher pinHasher, T
             return PunchResult.Reject(PunchRejection.ClockBehindLastPunch, last);
         }
 
-        var zone = SiteTime.ResolveZone(await uow.GetSettingAsync(SiteSettingKeys.TimeZoneId, ct), clock.LocalTimeZone);
         var offset = (int)zone.GetUtcOffset(now).TotalMinutes;
         var punch = await uow.AppendKioskPunchAsync(employeeId, direction, now, offset, ct);
 

@@ -33,10 +33,10 @@ public sealed class TestDatabase : IAsyncLifetime
     public SqlitePunchClockStore Store { get; }
 
     /// <summary>
-    /// Starts at the real time: the schema rejects kiosk punches more than 120 s from the database clock.
-    /// Machine zone pinned to UTC so offsets are deterministic unless a site zone is set.
+    /// Starts just behind the real time: the schema rejects kiosk punches later than the database
+    /// clock or more than 120 s behind it, so tests may advance a few seconds but not minutes.
     /// </summary>
-    public ManualTimeProvider Clock { get; } = new(DateTimeOffset.UtcNow);
+    public ManualTimeProvider Clock { get; } = new(DateTimeOffset.UtcNow.AddSeconds(-30));
 
     public EmployeeService Employees { get; }
 
@@ -46,7 +46,17 @@ public sealed class TestDatabase : IAsyncLifetime
 
     public SiteSettingsService Site { get; }
 
-    public async ValueTask InitializeAsync() => await new SchemaMigrator(Database).MigrateAsync();
+    public ValueTask InitializeAsync() => InitializeAsync(TimeZoneInfo.Utc.Id);
+
+    /// <param name="siteZone">Site time zone to configure, as an install would; null leaves it unset.</param>
+    public async ValueTask InitializeAsync(string? siteZone)
+    {
+        await new SchemaMigrator(Database).MigrateAsync();
+        if (siteZone is not null)
+        {
+            await ExecuteAsync(AuditActor.System, "UPDATE site_setting SET value = $zone WHERE key = 'time_zone_id';", ("$zone", siteZone));
+        }
+    }
 
     public ValueTask DisposeAsync()
     {
@@ -134,16 +144,7 @@ public sealed class TestDatabase : IAsyncLifetime
     }
 
     /// <summary>Rows returned by every verifier view; empty on an intact database.</summary>
-    public async Task<IReadOnlyList<string>> VerifyAsync()
-    {
-        var problems = new List<string>();
-        foreach (var view in new[] { "verify_chain_v", "verify_drift_v", "verify_continuity_v", "verify_history_v" })
-        {
-            problems.AddRange((await ColumnAsync($"SELECT problem FROM {view};")).Select(p => $"{view}: {p}"));
-        }
-
-        return problems;
-    }
+    public Task<IReadOnlyList<string>> VerifyAsync() => AuditVerifier.FindProblemsAsync(Database);
 
     private static SqliteCommand Command(SqliteConnection connection, string sql, (string Name, object Value)[] parameters)
     {
@@ -174,7 +175,10 @@ public abstract class DatabaseTest : IAsyncLifetime
 {
     protected TestDatabase Db { get; } = new();
 
-    public ValueTask InitializeAsync() => Db.InitializeAsync();
+    /// <summary>The site zone the database starts with; null to start unset like a fresh install.</summary>
+    protected virtual string? SiteZone => TimeZoneInfo.Utc.Id;
+
+    public ValueTask InitializeAsync() => Db.InitializeAsync(SiteZone);
 
     public ValueTask DisposeAsync() => Db.DisposeAsync();
 }

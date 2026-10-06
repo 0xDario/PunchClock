@@ -40,10 +40,18 @@ public sealed partial class MainViewModel(
 
     public bool CanPunch => SelectedEmployee is not null && !IsBusy;
 
+    private const string SiteZoneMissing =
+        "Punching is not available yet: an admin must set the site time zone (Admin, Site tab). Nothing was recorded.";
+
     public async Task LoadAsync()
     {
-        _zone = SiteTime.ResolveZone(await site.GetTimeZoneIdAsync(), clock.LocalTimeZone);
+        var zoneId = await site.GetTimeZoneIdAsync();
+        _zone = SiteTime.ResolveZone(zoneId, clock.LocalTimeZone);
         Tick();
+        if (zoneId is null)
+        {
+            Show(SiteZoneMissing, isError: true);
+        }
 
         Employees.Clear();
         foreach (var employee in await employees.ListActiveAsync())
@@ -106,6 +114,7 @@ public sealed partial class MainViewModel(
         return result.Rejection switch
         {
             null => $"{employee.DisplayName} punched {(direction == PunchDirection.In ? "in" : "out")} at {result.Punch!.OccurredAtLocal.ToString("t", CultureInfo.CurrentCulture)}.",
+            PunchRejection.SiteTimeZoneNotSet => SiteZoneMissing,
             PunchRejection.InvalidPin => "Incorrect PIN. Nothing was recorded.",
             PunchRejection.TooManyAttempts => $"Too many incorrect PINs. Try again in {PinPolicy.LockoutWindow.TotalMinutes:0} minutes or ask a manager to reset your PIN. Nothing was recorded.",
             PunchRejection.PinChangeRequired => "Your PIN must be replaced before you can punch. Nothing was recorded.",

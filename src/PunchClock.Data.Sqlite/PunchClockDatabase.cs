@@ -24,8 +24,9 @@ public static class PunchClockDatabase
     }
 
     /// <summary>
-    /// Creates the folder and file if needed and applies pending migrations.
-    /// Throws <see cref="SchemaMismatchException"/> rather than open a database it cannot vouch for.
+    /// Creates the folder and file if needed, applies pending migrations, and runs the audit
+    /// verifier. Throws <see cref="SchemaMismatchException"/> or <see cref="AuditIntegrityException"/>
+    /// rather than open a database it cannot vouch for.
     /// </summary>
     /// <param name="path">Database file; <see cref="ResolvePath"/> when null.</param>
     public static async Task<SqliteDatabase> OpenAndMigrateAsync(string? path = null, CancellationToken ct = default)
@@ -33,6 +34,13 @@ public static class PunchClockDatabase
         var database = new SqliteDatabase(path ?? ResolvePath());
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(database.Path)!);
         await new SchemaMigrator(database).MigrateAsync(ct);
+
+        var problems = await AuditVerifier.FindProblemsAsync(database, ct);
+        if (problems.Count > 0)
+        {
+            throw new AuditIntegrityException(problems);
+        }
+
         return database;
     }
 }
