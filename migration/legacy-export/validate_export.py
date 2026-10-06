@@ -34,6 +34,7 @@ MS_PER_DAY = 86_400_000
 LONG_SHIFT = dt.timedelta(hours=16)
 # NewStaffForm inserts the dummy shift with two separate DateTime.Now calls, so it can be a few ms long.
 NEAR_ZERO = dt.timedelta(seconds=1)
+DUMMY_MAX = dt.timedelta(seconds=2)  # same rule as ImportAnalyzer.DummyBound in the importer
 REQUIRED_TABLES = ("Employee", "Shift")
 
 
@@ -343,8 +344,16 @@ def col(header, row, name):
     return row[lower.index(name.lower())] if name.lower() in lower else None
 
 
-def is_near_zero(shift):
-    return shift[3] is not None and dt.timedelta(0) <= shift[3] - shift[2] < NEAR_ZERO
+def short_shift_kind(shift, first_shift, employees):
+    """'dummy' for the row NewStaffForm wrote for each new employee (two DateTime.Now reads):
+    the employee's lowest ShiftID, under 2 s. 'zero' for any other shift under 1 s, a double
+    punch. Both count as 0 hours. Matches the importer's DummyShift/ZeroLengthShift findings."""
+    sid, emp, tin, tout = shift
+    if tout is None or tout < tin:
+        return None
+    if emp in employees and first_shift.get(emp) == sid and tout - tin < DUMMY_MAX:
+        return "dummy"
+    return "zero" if tout - tin < NEAR_ZERO else None
 
 
 def quality(ex, site_tz, rep):
@@ -395,6 +404,11 @@ def quality(ex, site_tz, rep):
 
     shifts = []
     bad_rows = []
+    first_shift = {}  # lowest ShiftID per EmployeeID over every row, as the importer counts it
+    for r in srows:
+        if col(sh, r, "EmployeeID") is not None:
+            sid, emp = int(col(sh, r, "ShiftID")), int(col(sh, r, "EmployeeID"))
+            first_shift[emp] = min(sid, first_shift.get(emp, sid))
     for r in srows:
         sid = int(col(sh, r, "ShiftID"))
         emp = col(sh, r, "EmployeeID")
@@ -413,15 +427,13 @@ def quality(ex, site_tz, rep):
     if orphans:
         rep.add(f"- Orphan shifts (EmployeeID not in Employee): {sum(orphans.values())} rows, "
                 f"EmployeeID {dict(sorted(orphans.items()))}")
-    first_shift = {}
-    for s in shifts:
-        if s[1] not in first_shift or s[0] < first_shift[s[1]]:
-            first_shift[s[1]] = s[0]
-    dummy = [s[0] for s in shifts if is_near_zero(s)]
-    exact = sum(1 for s in shifts if s[3] is not None and s[3] == s[2])
-    initial = sum(1 for sid in dummy if sid in first_shift.values())
-    rep.add(f"- Zero-length or under-1 s shifts: {len(dummy)} ({exact} exactly zero; {initial} are the "
-            "employee's first shift, i.e. the new-employee dummy row; the rest look like double punches)")
+    kinds = {s[0]: short_shift_kind(s, first_shift, employees) for s in shifts}
+    zero_hours = {sid for sid, k in kinds.items() if k}
+    dummy = sorted(sid for sid, k in kinds.items() if k == "dummy")
+    double = sorted(sid for sid, k in kinds.items() if k == "zero")
+    rep.add(f"- New-employee dummy shifts (employee's lowest ShiftID, under {DUMMY_MAX.seconds} s): {len(dummy)}")
+    rep.add(f"- Other shifts under {NEAR_ZERO.seconds} s (double punches, or the dummy row of a deleted employee): {len(double)}" +
+            (f", ShiftID {double[:20]}" if double else ""))
     negative = [s[0] for s in shifts if s[3] is not None and s[3] < s[2]]
     if negative:
         rep.add(f"- TimeOut before TimeIn: ShiftID {negative}")
@@ -499,7 +511,8 @@ def quality(ex, site_tz, rep):
     rep.add()
     rep.add("`Report min`/`Report h` use the legacy pay report's formula, `Sum(DateDiff(\"n\",[TimeIn],[TimeOut])/60)`, "
             "over every shift with a TimeOut and no exclusions; apply the report's own date range or employee "
-            "filter before comparing. `Exact h` is elapsed time over closed shifts, under-1 s shifts excluded.")
+            "filter before comparing. `Exact h` is elapsed time over closed shifts, dummy and double-punch "
+            "shifts excluded.")
     rep.add()
     rep.add("| EmployeeID | Name | Shifts | Open | Report min | Report h | Exact h | First TimeIn | Last TimeIn |")
     rep.add("|---:|---|---:|---:|---:|---:|---:|---|---|")
@@ -507,7 +520,7 @@ def quality(ex, site_tz, rep):
         ss = by_emp[emp]
         r = employees.get(emp)
         nm = f"{col(eh, r, 'FirstName') or ''} {col(eh, r, 'LastName') or ''}".strip() if r else "(orphan)"
-        closed = [s for s in ss if s[3] is not None and s[3] > s[2] and not is_near_zero(s)]
+        closed = [s for s in ss if s[3] is not None and s[3] > s[2] and s[0] not in zero_hours]
         total = sum(hours(s[3] - s[2]) for s in closed)
         report_min = sum(access_minutes(s[2], s[3]) for s in ss if s[3] is not None)
         rep.add(f"| {emp} | {nm} | {len(ss)} | {sum(1 for s in ss if s[3] is None)} | {report_min} | "

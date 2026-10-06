@@ -103,7 +103,8 @@ class ValidateExportTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("PASS", out)
         self.assertIn("Orphan shifts (EmployeeID not in Employee): 1 rows", out)
-        self.assertIn("Zero-length or under-1 s shifts: 1 (1 exactly zero; 1 are", out)
+        self.assertIn("New-employee dummy shifts (employee's lowest ShiftID, under 2 s): 1", out)
+        self.assertIn("Other shifts under 1 s (double punches, or the dummy row of a deleted employee): 0", out)
         self.assertIn("PIN under 3 digits", out)
         self.assertIn("Employees sharing a PIN: [[1, 3]]", out)
         self.assertIn("Shifts over 16 h", out)
@@ -145,7 +146,7 @@ class ValidateExportTest(unittest.TestCase):
         root = write_export(pathlib.Path(self.tmp.name) / "extra", SHIFT + EXTRA_SHIFTS)
         rc, out = run(root)
         self.assertEqual(rc, 0, out)
-        self.assertIn("Zero-length or under-1 s shifts: 2 (1 exactly zero; 2 are the employee's first shift", out)
+        self.assertIn("New-employee dummy shifts (employee's lowest ShiftID, under 2 s): 2", out)
         self.assertIn("Overlapping shifts for the same employee: 3", out)
         self.assertIn("(21, 22), (21, 23)", out)
         self.assertIn("(24, 25)", out)  # an open shift overlaps everything after it
@@ -250,6 +251,20 @@ class ValidateExportTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("Employee: header", out)
         self.assertNotIn("Traceback", out)
+
+    def test_dummy_rule_matches_importer(self):
+        shifts = SHIFT + [
+            (30, 3, "2022-04-01T08:00:00.900", "2022-04-01T08:00:02.100"),  # first for 3, 1.2 s: dummy
+            (31, 3, "2022-04-02T08:00:00.000", "2022-04-02T08:00:01.500"),  # not first, 1.5 s: a real row
+            (32, 3, "2022-04-03T08:00:00.000", "2022-04-03T08:00:00.300"),  # not first, under 1 s: double punch
+            (33, 7, "2022-04-04T08:00:00.000", "2022-04-04T08:00:00.500"),  # orphan's first: never a dummy
+            (34, 1, "2022-04-05T08:00:00.000", "2022-04-05T08:00:01.000"),  # exactly 1 s, not first: real
+        ]
+        root = write_export(pathlib.Path(self.tmp.name) / "dummy", shifts)
+        rc, out = run(root)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("New-employee dummy shifts (employee's lowest ShiftID, under 2 s): 2", out)  # 12 and 30
+        self.assertIn("Other shifts under 1 s (double punches, or the dummy row of a deleted employee): 2, ShiftID [32, 33]", out)
 
     def test_report_hours_follow_access_datediff(self):
         t = v.parse_iso

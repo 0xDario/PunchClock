@@ -98,8 +98,9 @@ cd .. && python3 validate_export.py export --compare jackcess-export
 
 Integrity failures exit 1. Data-quality findings are reported, not failed, because each
 one is a migration decision: orphan `Shift.EmployeeID` values (the relationship exists
-but referential integrity is off), zero-length dummy shifts created with each new
-employee, open shifts and open shifts the legacy app can never close, shifts over 16 h,
+but referential integrity is off), the dummy shift NewStaffForm creates for each new
+employee (their lowest ShiftID, under 2 s, the same rule as the importer), other shifts
+under 1 s, open shifts and open shifts the legacy app can never close, shifts over 16 h,
 overlaps, ShiftID order disagreeing with time order, PINs that lost leading zeros or are
 shared, and DST-ambiguous or nonexistent local times. It ends with hours per employee in
 two forms: `Report h` uses the legacy pay report's `Sum(DateDiff("n",[TimeIn],[TimeOut])/60)`,
