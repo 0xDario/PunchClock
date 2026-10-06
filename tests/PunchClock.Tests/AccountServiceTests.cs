@@ -99,4 +99,35 @@ public sealed class AccountServiceTests : DatabaseTest
 
         Assert.Null(await Db.Accounts.SignInAsync("manager", "manager password"));
     }
+
+    [Fact]
+    public async Task Repeated_failed_sign_ins_lock_the_username_until_an_admin_changes_the_account()
+    {
+        var admin = await Db.AddAdminAsync();
+        var manager = await Db.AddManagerAsync();
+        for (var i = 0; i < AccountService.MaxFailedSignIns; i++)
+        {
+            Assert.Null(await Db.Accounts.SignInAsync("Manager ", $"guess number {i}"));
+        }
+
+        // Locked: even the right password is not checked.
+        await Assert.ThrowsAsync<SignInLockedException>(() => Db.Accounts.SignInAsync("manager", "manager password"));
+        Assert.Equal(admin.Id, (await Db.Accounts.SignInAsync(admin.Username, "correct horse battery"))!.Id);
+
+        // An admin touching the account (here: deactivate and reactivate) clears the lock.
+        await Db.Accounts.SetActiveAsync(admin, manager.Id, isActive: false, "Locked out after guesses");
+        await Db.Accounts.SetActiveAsync(admin, manager.Id, isActive: true, "Owner confirmed by phone");
+        Assert.Equal(manager.Id, (await Db.Accounts.SignInAsync("manager", "manager password"))!.Id);
+    }
+
+    [Fact]
+    public async Task Unknown_usernames_lock_too_so_lockout_does_not_reveal_which_exist()
+    {
+        for (var i = 0; i < AccountService.MaxFailedSignIns; i++)
+        {
+            Assert.Null(await Db.Accounts.SignInAsync("ghost", "whatever password"));
+        }
+
+        await Assert.ThrowsAsync<SignInLockedException>(() => Db.Accounts.SignInAsync("GHOST", "whatever password"));
+    }
 }

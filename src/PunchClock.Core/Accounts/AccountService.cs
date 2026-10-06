@@ -12,10 +12,22 @@ public enum AccountChangeResult
     NotAllowed,
 }
 
+/// <summary>Too many failed sign-ins for this username recently; the password was not checked.</summary>
+public sealed class SignInLockedException(TimeSpan window) : InvalidOperationException(
+    $"Too many failed sign-ins for this account. Try again in {window.TotalMinutes:0} minutes.");
+
 /// <summary>Admin and manager accounts: first-run setup, sign-in, activation.</summary>
 public sealed class AccountService(IPunchClockStore store, IPinHasher passwordHasher)
 {
     public const int MinPasswordLength = 10;
+
+    /// <summary>
+    /// Failed sign-ins allowed per username within <see cref="SignInLockout"/>. A success, or an
+    /// admin changing the account, clears the count; otherwise it ages out of the window.
+    /// </summary>
+    public const int MaxFailedSignIns = 5;
+
+    public static readonly TimeSpan SignInLockout = TimeSpan.FromMinutes(15);
 
     /// <summary>True until the first admin exists; only then may <see cref="CreateFirstAdminAsync"/> run.</summary>
     public async Task<bool> NeedsFirstAdminAsync(CancellationToken ct = default)
@@ -56,10 +68,18 @@ public sealed class AccountService(IPunchClockStore store, IPinHasher passwordHa
     }
 
     /// <returns>The signed-in admin or manager, or null. Both outcomes are audited.</returns>
+    /// <exception cref="SignInLockedException">Too many recent failures for this username.</exception>
     public async Task<AppUser?> SignInAsync(string username, string password, CancellationToken ct = default)
     {
+        username = username.Trim();
         await using var uow = await store.BeginAsync(ct);
-        var user = await uow.FindUserByUsernameAsync(username.Trim(), ct);
+        var user = await uow.FindUserByUsernameAsync(username, ct);
+
+        // Checked before the password, for unknown usernames too, so a locked guess learns nothing.
+        if (await uow.CountRecentSignInFailuresAsync(username, user?.Id, SignInLockout, ct) >= MaxFailedSignIns)
+        {
+            throw new SignInLockedException(SignInLockout);
+        }
 
         if (user is { IsActive: true, IsServiceAccount: false, PasswordHash: { } hash }
             && passwordHasher.Verify(password, hash))

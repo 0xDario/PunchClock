@@ -191,4 +191,29 @@ public sealed class EmployeeServiceTests : DatabaseTest
 
         Assert.True((await Db.Punches.PunchAsync(other, "5678", PunchDirection.In)).Accepted);
     }
+
+    [Fact]
+    public async Task Cannot_deactivate_an_employee_who_is_punched_in()
+    {
+        var id = await Db.AddEmployeeAsync();
+        await Db.Punches.PunchAsync(id, "1234", PunchDirection.In);
+
+        Assert.Equal(EmployeeChangeResult.PunchedIn, await Db.Employees.SetActiveAsync(AuditActor.System, id, isActive: false));
+        Assert.True((await Db.Punches.PunchAsync(id, "1234", PunchDirection.Out)).Accepted);
+        Assert.Equal(EmployeeChangeResult.Changed, await Db.Employees.SetActiveAsync(AuditActor.System, id, isActive: false));
+    }
+
+    [Fact]
+    public async Task Active_employees_cannot_share_a_name()
+    {
+        var first = await Db.AddEmployeeAsync(first: "Sam", last: "Lee");
+
+        await Assert.ThrowsAsync<ArgumentException>(() => Db.Employees.CreateAsync(AuditActor.System, " sam", "LEE ", "4321"));
+
+        Assert.Equal(EmployeeChangeResult.Changed, await Db.Employees.SetActiveAsync(AuditActor.System, first, isActive: false));
+        var second = await Db.Employees.CreateAsync(AuditActor.System, "Sam", "Lee", "4321");
+        Assert.Equal(EmployeeChangeResult.DuplicateName, await Db.Employees.SetActiveAsync(AuditActor.System, first, isActive: true));
+        Assert.Equal(EmployeeChangeResult.NotFound, await Db.Employees.SetActiveAsync(AuditActor.System, 999, isActive: true));
+        Assert.NotEqual(first, second);
+    }
 }
