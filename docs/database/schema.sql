@@ -1094,11 +1094,14 @@ SELECT a.seq, a.occurred_utc, p.occurred_utc AS previous_occurred_utc, 'clock mo
  WHERE (julianday(p.occurred_utc) - julianday(a.occurred_utc)) * 86400 > 60;
 
 -- Hash of every schema object. Compared with the value compiled into the app for this
--- user_version; a dropped or edited trigger changes it.
+-- user_version; a dropped or edited trigger changes it. Carriage returns are stripped so
+-- the same script run with CRLF or LF line endings gives the same value. Only SQLite's
+-- own objects (always lowercase 'sqlite_') and the migration runner's table are skipped.
+-- The app's inline copy of this query must stay byte-identical.
 CREATE VIEW schema_fingerprint_v AS
-SELECT pc_sha256(json_group_array(json_array(type, name, tbl_name, sql) ORDER BY type, name)) AS fingerprint
+SELECT pc_sha256(json_group_array(json_array(type, name, tbl_name, replace(sql, char(13), '')) ORDER BY type, name)) AS fingerprint
   FROM sqlite_schema
- WHERE lower(substr(name, 1, 7)) <> 'sqlite_'
+ WHERE substr(name, 1, 7) <> 'sqlite_'
    AND NOT (type = 'table' AND name = 'schema_migrations');
 
 -- ===========================================================================
