@@ -146,7 +146,9 @@ class ValidateExportTest(unittest.TestCase):
         rc, out = run(root)
         self.assertEqual(rc, 0, out)
         self.assertIn("Zero-length or under-1 s shifts: 2 (1 exactly zero; 2 are the employee's first shift", out)
-        self.assertIn("Overlapping shifts for the same employee: 2, e.g. [(21, 22), (21, 23)]", out)
+        self.assertIn("Overlapping shifts for the same employee: 3", out)
+        self.assertIn("(21, 22), (21, 23)", out)
+        self.assertIn("(24, 25)", out)  # an open shift overlaps everything after it
         self.assertIn("never close (not the employee's last ShiftID): [(3, [24])]", out)
 
     def test_missing_snapshot_fails(self):
@@ -156,6 +158,29 @@ class ValidateExportTest(unittest.TestCase):
         rc, out = run(self.root)
         self.assertEqual(rc, 1)
         self.assertIn("snapshot source/PunchClock.accdb named in the manifest is missing", out)
+
+    def test_undeclared_snapshot_fails(self):
+        m = json.loads((self.root / "manifest.json").read_text())
+        del m["source"]["snapshot"]
+        (self.root / "manifest.json").write_text(json.dumps(m))
+        rc, out = run(self.root)
+        self.assertEqual(rc, 1)
+        self.assertIn("manifest declares no source snapshot", out)
+
+    def test_text_primary_key_table(self):
+        (self.root / "Lookup.csv").write_bytes(b"Code,Label\r\nB,Bee\r\nA,Ay\r\n")
+        m = json.loads((self.root / "manifest.json").read_text())
+        m["tables"].append({"name": "Lookup", "file": "Lookup.csv", "row_count": 2, "primary_key": "Code",
+                            "min_id": None, "max_id": None, "columns": ["Code", "Label"]})
+        (self.root / "manifest.json").write_text(json.dumps(m))
+        (self.root / "SHA256SUMS.txt").unlink()
+        rc, out = run(self.root)
+        self.assertEqual(rc, 0, out)
+
+    def test_unknown_time_zone_is_reported_not_raised(self):
+        rc, out = run(self.root, "--site-tz", "Nowhere/Atlantis")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("DST check skipped: time zone `Nowhere/Atlantis` not found", out)
 
     def test_compare_requires_core_tables(self):
         other = write_export(pathlib.Path(self.tmp.name) / "other")

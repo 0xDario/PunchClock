@@ -8,7 +8,7 @@ or altered.
 |---|---|---|---|
 | `run-export.cmd` / `Export-LegacyData.ps1` | Windows, the machine that runs the old app | ACE OLEDB, the engine the app uses | Primary export |
 | `jackcess/LegacyExport.java` | Any OS | [Jackcess](https://jackcess.sourceforge.io/) + jackcess-encrypt, no Access install | Independent second read of the same snapshot |
-| `validate_export.py` | Any OS, Python 3.9+, stdlib only | the export folder or zip | Integrity check, cross-check, data-quality report |
+| `validate_export.py` | Any OS, Python 3.9+, stdlib only (plus `tzdata` on Windows for `--site-tz`) | the export folder or zip | Integrity check, cross-check, data-quality report |
 
 ## Running the export (Windows)
 
@@ -46,7 +46,7 @@ legacy-export-<timestamp>/
   Employee.csv
   Shift.csv
   <any other user table>.csv
-  queries.csv               saved query SQL (the pay report's record source, if saved)
+  access.queries.csv        saved query SQL (the pay report's record source, if saved)
   manifest.json             hashes, row counts, ID ranges, Access control totals, site time zone
   SHA256SUMS.txt            every file above
 legacy-export-<timestamp>.zip
@@ -93,7 +93,7 @@ python3 validate_export.py legacy-export-<timestamp>.zip --site-tz America/Toron
 # Independent second read of the snapshot, then cross-check:
 cd jackcess && mvn -q dependency:copy-dependencies -DoutputDirectory=lib
 java -cp 'lib/*' LegacyExport.java ../export/source/PunchClock.accdb ../jackcess-export
-python3 validate_export.py ../export --compare ../jackcess-export
+cd .. && python3 validate_export.py export --compare jackcess-export
 ```
 
 Integrity failures exit 1. Data-quality findings are reported, not failed, because each

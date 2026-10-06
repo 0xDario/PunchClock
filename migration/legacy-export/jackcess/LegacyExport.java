@@ -105,7 +105,7 @@ public class LegacyExport {
             if (isDate(c)) header.add(c.getName() + "_OADate");
         }
 
-        StringBuilder csv = new StringBuilder(String.join(",", header)).append("\r\n");
+        StringBuilder csv = new StringBuilder(String.join(",", header.stream().map(LegacyExport::field).toList())).append("\r\n");
         long rows = 0;
         Long minId = null, maxId = null;
         Cursor cursor = CursorBuilder.createCursor(table.getPrimaryKeyIndex());
@@ -159,7 +159,12 @@ public class LegacyExport {
     /** Same arithmetic as .NET DateTime.ToOADate, so both exporters emit identical doubles. */
     static double toOADate(LocalDateTime t) {
         long ms = Duration.between(OA_EPOCH, t).toMillis();
-        if (ms < 0) ms -= (ms % MS_PER_DAY) * 2;
+        // Before the epoch the integer part counts days back and the fraction counts
+        // time forward, e.g. 1899-12-29 06:00 is -1.25.
+        if (ms < 0) {
+            long frac = ms % MS_PER_DAY;
+            if (frac != 0) ms -= (MS_PER_DAY + frac) * 2;
+        }
         return (double) ms / MS_PER_DAY;
     }
 

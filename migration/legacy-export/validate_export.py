@@ -23,6 +23,7 @@ import decimal
 import hashlib
 import json
 import pathlib
+import shutil
 import sys
 import tempfile
 import zipfile
@@ -120,7 +121,9 @@ class Export:
                         continue
                     dest = root.joinpath(*rel.parts)
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_bytes(z.read(info))
+                    # Stream: the snapshot can be as large as the production database.
+                    with z.open(info) as src, open(dest, "wb") as out:
+                        shutil.copyfileobj(src, out, 1 << 20)
             # Compress-Archive puts files at the root; tolerate one wrapping folder.
             if not (root / "manifest.json").exists():
                 subs = [p for p in root.iterdir() if p.is_dir() and (p / "manifest.json").exists()]
@@ -168,14 +171,15 @@ def check_integrity(ex, rep):
         for name in sorted(set(extra) - listed):
             rep.fail(f"file not covered by SHA256SUMS: {name}")
 
+    # Without the snapshot the CSVs cannot be tied back to the hashed source bytes.
     src = m.get("source", {})
     snap = src.get("snapshot")
-    if snap and (ex.dir / snap).exists():
-        if sha256(ex.dir / snap) != src.get("sha256"):
-            rep.fail("snapshot hash differs from the source hash in the manifest")
-    elif snap:
-        # Without the snapshot the CSVs cannot be tied back to the hashed source bytes.
+    if not snap:
+        rep.fail("manifest declares no source snapshot")
+    elif not (ex.dir / snap).exists():
         rep.fail(f"snapshot {snap} named in the manifest is missing")
+    elif sha256(ex.dir / snap) != src.get("sha256"):
+        rep.fail("snapshot hash differs from the source hash in the manifest")
 
     names = {t["name"] for t in m["tables"]}
     for name in REQUIRED_TABLES:
@@ -220,19 +224,22 @@ def check_table(ex, t, rep):
     pk = t.get("primary_key")
     if isinstance(pk, str) and pk in header:
         k = header.index(pk)
-        ids = []
-        for r in body:
-            if r[k] is None:
-                rep.fail(f"{name}: NULL {pk}")
-                return
-            ids.append(int(r[k]))
-        if len(set(ids)) != len(ids):
+        keys = [r[k] for r in body]
+        if None in keys:
+            rep.fail(f"{name}: NULL {pk}")
+            return
+        if len(set(keys)) != len(keys):
             rep.fail(f"{name}: duplicate {pk} values")
-        if ids != sorted(ids):
-            rep.fail(f"{name}: rows not ordered by {pk}")
-        lo, hi = (min(ids), max(ids)) if ids else (None, None)
-        if (t.get("min_id"), t.get("max_id")) != (lo, hi):
-            rep.fail(f"{name}: {pk} range {lo}..{hi} != manifest {t.get('min_id')}..{t.get('max_id')}")
+        try:
+            ids = [int(x) for x in keys]
+        except ValueError:
+            ids = None  # text or GUID key: Access collation decides the order, so only uniqueness is checked
+        if ids is not None:
+            if ids != sorted(ids):
+                rep.fail(f"{name}: rows not ordered by {pk}")
+            lo, hi = (min(ids), max(ids)) if ids else (None, None)
+            if (t.get("min_id"), t.get("max_id")) != (lo, hi):
+                rep.fail(f"{name}: {pk} range {lo}..{hi} != manifest {t.get('min_id')}..{t.get('max_id')}")
 
     # ISO column must equal the stored double rounded to the millisecond.
     for c in header:
@@ -410,13 +417,15 @@ def quality(ex, site_tz, rep):
             if cur[2] < prev[2]:
                 inversions.append((prev[0], cur[0]))
         # Compare each shift with the latest-ending earlier shift, so a long shift
-        # containing several short ones reports every contained shift.
+        # containing several short ones reports every contained shift. An open shift
+        # never ends, so it overlaps everything after it.
         latest = None  # (end, ShiftID)
         for cur in sorted(ss, key=lambda s: s[2]):
             if latest is not None and cur[2] < latest[0]:
                 overlaps.append((latest[1], cur[0]))
-            if cur[3] is not None and (latest is None or cur[3] > latest[0]):
-                latest = (cur[3], cur[0])
+            end = cur[3] if cur[3] is not None else dt.datetime.max
+            if latest is None or end > latest[0]:
+                latest = (end, cur[0])
     rep.add(f"- Open shifts (TimeOut NULL): {len(open_rows)}" + (f", ShiftID {open_rows[:20]}" if open_rows else ""))
     if multi_open:
         rep.add(f"- Employees with more than one open shift: {multi_open}")
@@ -427,9 +436,16 @@ def quality(ex, site_tz, rep):
     if overlaps:
         rep.add(f"- Overlapping shifts for the same employee: {len(overlaps)}, e.g. {overlaps[:10]}")
 
+    tz = None
     if site_tz:
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo(site_tz)
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        try:
+            tz = ZoneInfo(site_tz)
+        except ZoneInfoNotFoundError:
+            # Windows Python ships no IANA database.
+            rep.add(f"- DST check skipped: time zone `{site_tz}` not found. On Windows run "
+                    "`python -m pip install tzdata` and retry.")
+    if tz:
         gap, fold = [], []
         for s in shifts:
             for t in (s[2], s[3]):
@@ -443,7 +459,7 @@ def quality(ex, site_tz, rep):
         rep.add(f"- DST ({site_tz}): {len(set(fold))} shifts with an ambiguous local time, "
                 f"{len(set(gap))} with a time that does not exist" +
                 (f"; ShiftID {sorted(set(fold) | set(gap))[:20]}" if fold or gap else ""))
-    else:
+    elif not site_tz:
         rep.add("- DST check skipped; pass --site-tz with the site's IANA zone (manifest records "
                 f"`{ex.manifest.get('site_time_zone', {}).get('id', 'unknown')}`).")
     rep.add()

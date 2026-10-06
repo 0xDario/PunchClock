@@ -8,7 +8,7 @@
     2. Hashes the source .accdb (SHA-256) and copies it to <OutDir>\source\.
     3. Opens the copy through ACE OLEDB and exports every user table (Employee
        and Shift are required) ordered by primary key, keeping legacy IDs and the
-       raw stored timestamps, plus saved query definitions to queries.csv.
+       raw stored timestamps, plus saved query definitions to access.queries.csv.
     4. Asks Access for control totals (COUNT(*), per-column non-NULL counts, sums
        of numeric columns, date bounds) through a query independent of the row
        export, and fails if the row count disagrees.
@@ -119,7 +119,7 @@ function Export-ReaderToCsv {
         [string]$Path
     )
     $csv = New-Object Text.StringBuilder
-    [void]$csv.Append([string]::Join(',', @($Spec | ForEach-Object { $_.Name })) + "`r`n")
+    [void]$csv.Append([string]::Join(',', @($Spec | ForEach-Object { Format-Field $_.Name })) + "`r`n")
     $rows = 0
     $minId = $null
     $maxId = $null
@@ -347,7 +347,8 @@ try {
     $qcsv = New-Object Text.StringBuilder
     [void]$qcsv.Append("name,kind,sql`r`n")
     foreach ($q in $queries) { [void]$qcsv.Append((Format-Field $q.name) + ',' + (Format-Field $q.kind) + ',' + (Format-Field $q.sql) + "`r`n") }
-    [IO.File]::WriteAllText((Join-Path $OutDir 'queries.csv'), $qcsv.ToString(), $script:Utf8NoBom)
+    # Access object names cannot contain '.', so this name never collides with a <table>.csv.
+    [IO.File]::WriteAllText((Join-Path $OutDir 'access.queries.csv'), $qcsv.ToString(), $script:Utf8NoBom)
 
     # --- Export each table ---------------------------------------------------------
     foreach ($tname in $userTables) {
@@ -487,7 +488,7 @@ $manifest = [ordered]@{
     tables = @($tableResults)
     linked_tables = @($linkedTables)
     relationships = @($relations)
-    queries = [ordered]@{ file = 'queries.csv'; count = $queries.Count }
+    queries = [ordered]@{ file = 'access.queries.csv'; count = $queries.Count }
     warnings = @($warnings)
     failures = @($failures)
 }
