@@ -37,6 +37,9 @@ public interface IPunchClockUnitOfWork : IAsyncDisposable
 
     Task<long> AddEmployeeAsync(NewEmployee employee, CancellationToken ct = default);
 
+    /// <summary>Wrong-PIN attempts for the employee within <paramref name="window"/> that no later success or reset has cleared.</summary>
+    Task<int> CountRecentPinFailuresAsync(long employeeId, TimeSpan window, CancellationToken ct = default);
+
     /// <summary>Sets a new PIN hash and <see cref="Employee.PinMustChange"/>.</summary>
     Task SetPinHashAsync(long employeeId, string pinHash, bool mustChange, CancellationToken ct = default);
 

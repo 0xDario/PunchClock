@@ -27,7 +27,7 @@ public partial class App : Application
                 new SiteSettingsService(store));
 
 #if DEBUG
-            await DemoData.SeedIfEmptyAsync(services.Employees);
+            await DemoData.SeedIfRequestedAsync(services.Employees);
 #endif
 
             var viewModel = new MainViewModel(services.Employees, services.Punches, services.Site, TimeProvider.System);

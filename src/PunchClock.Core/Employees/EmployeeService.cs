@@ -12,6 +12,9 @@ public enum PinChangeResult
     EmployeeNotFound,
     InvalidCurrentPin,
     NewPinRejected,
+
+    /// <summary>Too many wrong PINs recently; see <see cref="PinPolicy.MaxFailedAttempts"/>.</summary>
+    TooManyAttempts,
 }
 
 public enum PinResetResult
@@ -41,8 +44,13 @@ public sealed class EmployeeService(IPunchClockStore store, IPinHasher pinHasher
     }
 
     /// <param name="by">A manager, an admin or the system account; the database rejects anyone else.</param>
+    /// <param name="pinMustChange">
+    /// True unless the employee chose <paramref name="pin"/> themselves: whoever typed it in knows it,
+    /// so by default the employee must replace it before their first punch is recorded.
+    /// </param>
     /// <exception cref="ArgumentException">A name is blank or the PIN violates <see cref="PinPolicy"/>.</exception>
-    public async Task<long> CreateAsync(AuditActor by, string firstName, string lastName, string pin, CancellationToken ct = default)
+    public async Task<long> CreateAsync(
+        AuditActor by, string firstName, string lastName, string pin, bool pinMustChange = true, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(firstName);
         ArgumentException.ThrowIfNullOrWhiteSpace(lastName);
@@ -51,7 +59,7 @@ public sealed class EmployeeService(IPunchClockStore store, IPinHasher pinHasher
             throw new ArgumentException(error, nameof(pin));
         }
 
-        var employee = new NewEmployee(firstName.Trim(), lastName.Trim(), pinHasher.Hash(pin));
+        var employee = new NewEmployee(firstName.Trim(), lastName.Trim(), pinHasher.Hash(pin), pinMustChange);
 
         await using var uow = await store.BeginAsync(ct);
         uow.ActAs(by);
@@ -87,6 +95,11 @@ public sealed class EmployeeService(IPunchClockStore store, IPinHasher pinHasher
         }
 
         uow.ActAs(AuditActor.ForEmployee(employeeId));
+        if (await uow.CountRecentPinFailuresAsync(employeeId, PinPolicy.LockoutWindow, ct) >= PinPolicy.MaxFailedAttempts)
+        {
+            return PinChangeResult.TooManyAttempts;
+        }
+
         if (!pinHasher.Verify(currentPin, employee.PinHash))
         {
             await uow.RecordEventAsync(AuditEvent.AuthPinFailed, ct: ct);
