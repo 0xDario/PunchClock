@@ -37,7 +37,7 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
 {
     private const string EmployeeColumns = "id, first_name, last_name, is_active, pin_hash, pin_must_change, legacy_id";
     private const string PunchColumns = "id, employee_id, direction, occurred_utc, utc_offset_minutes, recorded_utc, source";
-    private const string UserColumns = "id, username, display_name, role, is_active, password_hash, employee_id";
+    private const string UserColumns = "id, username, display_name, role, is_active, password_hash, employee_id, must_change_password";
 
     private bool _completed;
 
@@ -291,12 +291,13 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
 
     public async Task<long> AddUserAsync(NewAppUser user, CancellationToken ct = default)
     {
-        // must_change_password = 0: the person setting the password is the person who will use it.
         await using var command = Command("""
-            INSERT INTO app_user (username, display_name, role, password_hash, must_change_password)
-            VALUES ($username, $display, $role, $password, 0)
+            INSERT INTO app_user (username, display_name, role, password_hash, employee_id, must_change_password)
+            VALUES ($username, $display, $role, $password, $employee, $must)
             RETURNING id;
             """);
+        command.Parameters.AddWithValue("$employee", (object?)user.EmployeeId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$must", user.MustChangePassword ? 1 : 0);
         command.Parameters.AddWithValue("$username", user.Username);
         command.Parameters.AddWithValue("$display", user.DisplayName);
         command.Parameters.AddWithValue("$role", user.Role switch
@@ -313,6 +314,23 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
     {
         await using var command = Command("UPDATE app_user SET is_active = $active WHERE id = $id;");
         command.Parameters.AddWithValue("$active", isActive ? 1 : 0);
+        command.Parameters.AddWithValue("$id", userId);
+        await ExpectOneRowAsync(command, $"Account {userId}", ct);
+    }
+
+    public async Task SetUserPasswordAsync(long userId, string passwordHash, bool mustChange, CancellationToken ct = default)
+    {
+        await using var command = Command("UPDATE app_user SET password_hash = $password, must_change_password = $must WHERE id = $id;");
+        command.Parameters.AddWithValue("$password", passwordHash);
+        command.Parameters.AddWithValue("$must", mustChange ? 1 : 0);
+        command.Parameters.AddWithValue("$id", userId);
+        await ExpectOneRowAsync(command, $"Account {userId}", ct);
+    }
+
+    public async Task SetUserEmployeeAsync(long userId, long? employeeId, CancellationToken ct = default)
+    {
+        await using var command = Command("UPDATE app_user SET employee_id = $employee WHERE id = $id;");
+        command.Parameters.AddWithValue("$employee", (object?)employeeId ?? DBNull.Value);
         command.Parameters.AddWithValue("$id", userId);
         await ExpectOneRowAsync(command, $"Account {userId}", ct);
     }
@@ -404,7 +422,8 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
         },
         reader.GetInt64(4) == 1,
         reader.IsDBNull(5) ? null : reader.GetString(5),
-        reader.IsDBNull(6) ? null : reader.GetInt64(6));
+        reader.IsDBNull(6) ? null : reader.GetInt64(6),
+        reader.GetInt64(7) == 1);
 
     private static string ToDb(PunchDirection direction) => direction switch
     {

@@ -10,13 +10,30 @@ public enum AccountChangeResult
     Changed,
     NotFound,
     NotAllowed,
+    ReasonRequired,
+    PasswordRejected,
+    UsernameTaken,
+    EmployeeNotFound,
+    EmployeeAlreadyLinked,
+}
+
+public enum PasswordChangeResult
+{
+    Changed,
+    InvalidCurrentPassword,
+    PasswordRejected,
+    TooManyAttempts,
+    NotAllowed,
 }
 
 /// <summary>Too many failed sign-ins for this username recently; the password was not checked.</summary>
 public sealed class SignInLockedException(TimeSpan window) : InvalidOperationException(
     $"Too many failed sign-ins for this account. Try again in {window.TotalMinutes:0} minutes.");
 
-/// <summary>Admin and manager accounts: first-run setup, sign-in, activation.</summary>
+/// <summary>
+/// Admin and manager accounts: first-run setup, sign-in, creation, passwords, employee links and
+/// activation. Each person gets their own account so the audit log names who made each change.
+/// </summary>
 public sealed class AccountService(IPunchClockStore store, IPinHasher passwordHasher)
 {
     public const int MinPasswordLength = 10;
@@ -97,6 +114,161 @@ public sealed class AccountService(IPunchClockStore store, IPinHasher passwordHa
         return null;
     }
 
+    /// <summary>
+    /// Creates a named admin or manager account with a temporary password the owner must replace
+    /// at first sign-in. <paramref name="employeeId"/> links the employee the person also punches
+    /// as, so they cannot correct their own punches. Admins only.
+    /// </summary>
+    public async Task<AccountChangeResult> CreateAccountAsync(
+        AppUser admin, string username, string displayName, UserRole role, string temporaryPassword, long? employeeId,
+        CancellationToken ct = default)
+    {
+        if (!IsActiveAdmin(admin) || role is not (UserRole.Admin or UserRole.Manager)
+            || string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(displayName))
+        {
+            return AccountChangeResult.NotAllowed;
+        }
+
+        if (!IsAcceptablePassword(temporaryPassword))
+        {
+            return AccountChangeResult.PasswordRejected;
+        }
+
+        await using var uow = await store.BeginAsync(ct);
+        if (await uow.FindUserByUsernameAsync(username.Trim(), ct) is not null)
+        {
+            return AccountChangeResult.UsernameTaken;
+        }
+
+        if (await CheckEmployeeLinkAsync(uow, userId: null, employeeId, ct) is { } refused)
+        {
+            return refused;
+        }
+
+        uow.ActAs(AuditActor.ForUser(admin.Id));
+        await uow.AddUserAsync(new NewAppUser(
+            username.Trim(), displayName.Trim(), role, passwordHasher.Hash(temporaryPassword), employeeId, MustChangePassword: true), ct);
+        await uow.CommitAsync(ct);
+        return AccountChangeResult.Changed;
+    }
+
+    /// <summary>
+    /// The signed-in person replaces their own password, which also clears a forced change.
+    /// A wrong current password counts as a failed sign-in for the lockout.
+    /// </summary>
+    public async Task<PasswordChangeResult> ChangeOwnPasswordAsync(
+        AppUser user, string currentPassword, string newPassword, CancellationToken ct = default)
+    {
+        await using var uow = await store.BeginAsync(ct);
+        var current = await uow.FindUserAsync(user.Id, ct);
+        if (current is not { IsActive: true, IsServiceAccount: false, PasswordHash: { } hash })
+        {
+            return PasswordChangeResult.NotAllowed;
+        }
+
+        if (await uow.CountRecentSignInFailuresAsync(current.Username, current.Id, SignInLockout, ct) >= MaxFailedSignIns)
+        {
+            return PasswordChangeResult.TooManyAttempts;
+        }
+
+        uow.ActAs(AuditActor.ForUser(current.Id));
+        if (!passwordHasher.Verify(currentPassword, hash))
+        {
+            await uow.RecordEventAsync(AuditEvent.AuthLoginFailed, JsonSerializer.Serialize(new { username = current.Username }), ct);
+            await uow.CommitAsync(ct);
+            return PasswordChangeResult.InvalidCurrentPassword;
+        }
+
+        if (!IsAcceptablePassword(newPassword) || newPassword == currentPassword)
+        {
+            return PasswordChangeResult.PasswordRejected;
+        }
+
+        await uow.SetUserPasswordAsync(current.Id, passwordHasher.Hash(newPassword), mustChange: false, ct);
+        await uow.CommitAsync(ct);
+        return PasswordChangeResult.Changed;
+    }
+
+    /// <summary>
+    /// An admin sets a temporary password for someone who forgot theirs; the owner must replace it
+    /// at their next sign-in. Clears that account's sign-in lockout. Not for the admin's own account.
+    /// </summary>
+    public async Task<AccountChangeResult> ResetPasswordAsync(
+        AppUser admin, long userId, string temporaryPassword, string reason, CancellationToken ct = default)
+    {
+        if (!IsActiveAdmin(admin) || userId == admin.Id)
+        {
+            return AccountChangeResult.NotAllowed;
+        }
+
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            return AccountChangeResult.ReasonRequired;
+        }
+
+        if (!IsAcceptablePassword(temporaryPassword))
+        {
+            return AccountChangeResult.PasswordRejected;
+        }
+
+        await using var uow = await store.BeginAsync(ct);
+        var target = await uow.FindUserAsync(userId, ct);
+        if (target is null)
+        {
+            return AccountChangeResult.NotFound;
+        }
+
+        if (target.IsServiceAccount)
+        {
+            return AccountChangeResult.NotAllowed;
+        }
+
+        uow.ActAs(AuditActor.ForUser(admin.Id), reason.Trim());
+        await uow.SetUserPasswordAsync(userId, passwordHasher.Hash(temporaryPassword), mustChange: true, ct);
+        await uow.CommitAsync(ct);
+        return AccountChangeResult.Changed;
+    }
+
+    /// <summary>
+    /// Links an account to the employee its owner punches as, or unlinks it (null). An admin cannot
+    /// change their own link, so nobody can unlink themselves to correct their own punches.
+    /// </summary>
+    public async Task<AccountChangeResult> SetEmployeeLinkAsync(
+        AppUser admin, long userId, long? employeeId, string reason, CancellationToken ct = default)
+    {
+        if (!IsActiveAdmin(admin) || userId == admin.Id)
+        {
+            return AccountChangeResult.NotAllowed;
+        }
+
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            return AccountChangeResult.ReasonRequired;
+        }
+
+        await using var uow = await store.BeginAsync(ct);
+        var target = await uow.FindUserAsync(userId, ct);
+        if (target is null)
+        {
+            return AccountChangeResult.NotFound;
+        }
+
+        if (target.IsServiceAccount)
+        {
+            return AccountChangeResult.NotAllowed;
+        }
+
+        if (await CheckEmployeeLinkAsync(uow, userId, employeeId, ct) is { } refused)
+        {
+            return refused;
+        }
+
+        uow.ActAs(AuditActor.ForUser(admin.Id), reason.Trim());
+        await uow.SetUserEmployeeAsync(userId, employeeId, ct);
+        await uow.CommitAsync(ct);
+        return AccountChangeResult.Changed;
+    }
+
     public async Task SignOutAsync(AppUser user, CancellationToken ct = default)
     {
         await using var uow = await store.BeginAsync(ct);
@@ -133,5 +305,27 @@ public sealed class AccountService(IPunchClockStore store, IPinHasher passwordHa
         await uow.SetUserActiveAsync(userId, isActive, ct);
         await uow.CommitAsync(ct);
         return AccountChangeResult.Changed;
+    }
+
+    private static bool IsActiveAdmin(AppUser user) => user is { Role: UserRole.Admin, IsActive: true };
+
+    private static bool IsAcceptablePassword(string? password) => password is not null && password.Length >= MinPasswordLength;
+
+    private static async Task<AccountChangeResult?> CheckEmployeeLinkAsync(
+        IPunchClockUnitOfWork uow, long? userId, long? employeeId, CancellationToken ct)
+    {
+        if (employeeId is not { } id)
+        {
+            return null;
+        }
+
+        if (await uow.FindEmployeeAsync(id, ct) is null)
+        {
+            return AccountChangeResult.EmployeeNotFound;
+        }
+
+        return (await uow.ListUsersAsync(ct)).Any(u => u.EmployeeId == id && u.Id != userId)
+            ? AccountChangeResult.EmployeeAlreadyLinked
+            : null;
     }
 }

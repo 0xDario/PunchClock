@@ -85,5 +85,10 @@ public interface IPunchClockUnitOfWork : IAsyncDisposable
 
     Task SetUserActiveAsync(long userId, bool isActive, CancellationToken ct = default);
 
+    Task SetUserPasswordAsync(long userId, string passwordHash, bool mustChange, CancellationToken ct = default);
+
+    /// <summary>Links the account to the employee its owner punches as, or unlinks it (null).</summary>
+    Task SetUserEmployeeAsync(long userId, long? employeeId, CancellationToken ct = default);
+
     Task CommitAsync(CancellationToken ct = default);
 }
