@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using PunchClock.Core.Accounts;
 using PunchClock.Core.Audit;
 using PunchClock.Core.Employees;
 using PunchClock.Core.Punches;
@@ -91,5 +92,40 @@ public sealed class EmployeeServiceTests : DatabaseTest
         Assert.Equal(1, await Db.ScalarAsync<long>(
             "SELECT count(*) FROM audit_log WHERE table_name = 'employee' AND action = 'UPDATE' AND actor_kind = 'employee' AND actor_id = $id;",
             ("$id", id)));
+    }
+
+    [Fact]
+    public async Task Manager_resets_a_forgotten_pin_to_a_temporary_one_the_employee_must_replace()
+    {
+        var id = await Db.AddEmployeeAsync("1234");
+        var manager = await Db.AddManagerAsync();
+
+        Assert.Equal(PinResetResult.Reset, await Db.Employees.ResetPinAsync(manager, id, "9999", "Forgot PIN"));
+
+        Assert.Equal(PunchRejection.InvalidPin, (await Db.Punches.PunchAsync(id, "1234", PunchDirection.In)).Rejection);
+        Assert.Equal(PunchRejection.PinChangeRequired, (await Db.Punches.PunchAsync(id, "9999", PunchDirection.In)).Rejection);
+        Assert.Equal(PinChangeResult.NewPinRejected, await Db.Employees.ChangeOwnPinAsync(id, "9999", "9999"));
+        Assert.Equal(PinChangeResult.Changed, await Db.Employees.ChangeOwnPinAsync(id, "9999", "2468"));
+        Assert.True((await Db.Punches.PunchAsync(id, "2468", PunchDirection.In)).Accepted);
+
+        Assert.Equal("Forgot PIN", await Db.ScalarAsync<string>("""
+            SELECT reason FROM audit_log
+             WHERE table_name = 'employee' AND row_id = $id AND action = 'UPDATE' AND actor_kind = 'user' AND actor_id = $by;
+            """, ("$id", id), ("$by", manager.Id)));
+        Assert.Empty(await Db.VerifyAsync());
+    }
+
+    [Fact]
+    public async Task Pin_reset_needs_a_manager_or_admin_a_reason_and_a_valid_pin()
+    {
+        var id = await Db.AddEmployeeAsync("1234");
+        var manager = await Db.AddManagerAsync();
+        var migration = manager with { Id = AuditActor.Migration.Id, Role = UserRole.Migration };
+
+        Assert.Equal(PinResetResult.NotAllowed, await Db.Employees.ResetPinAsync(migration, id, "9999", "Forgot PIN"));
+        Assert.Equal(PinResetResult.NotAllowed, await Db.Employees.ResetPinAsync(manager, id, "9999", " "));
+        Assert.Equal(PinResetResult.PinRejected, await Db.Employees.ResetPinAsync(manager, id, "12", "Forgot PIN"));
+        Assert.Equal(PinResetResult.EmployeeNotFound, await Db.Employees.ResetPinAsync(manager, 999, "9999", "Forgot PIN"));
+        Assert.True((await Db.Punches.PunchAsync(id, "1234", PunchDirection.In)).Accepted);
     }
 }

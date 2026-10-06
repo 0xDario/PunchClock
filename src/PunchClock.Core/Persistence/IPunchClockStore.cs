@@ -37,8 +37,8 @@ public interface IPunchClockUnitOfWork : IAsyncDisposable
 
     Task<long> AddEmployeeAsync(NewEmployee employee, CancellationToken ct = default);
 
-    /// <summary>Sets a new PIN hash and clears <see cref="Employee.PinMustChange"/>.</summary>
-    Task SetPinHashAsync(long employeeId, string pinHash, CancellationToken ct = default);
+    /// <summary>Sets a new PIN hash and <see cref="Employee.PinMustChange"/>.</summary>
+    Task SetPinHashAsync(long employeeId, string pinHash, bool mustChange, CancellationToken ct = default);
 
     Task SetEmployeeActiveAsync(long employeeId, bool isActive, CancellationToken ct = default);
 
