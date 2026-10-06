@@ -109,6 +109,23 @@ public sealed class LegacyImporterTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_time_in_the_spring_forward_gap_is_stored_an_hour_later_with_its_issue_recorded()
+    {
+        _export.Employee(20, "Di", "Moreau").Shift(40, 20, "2026-03-08 02:30:00", "2026-03-08 04:00:00");
+        _export.Build();
+        var plan = ImportAnalyzer.Analyze(LegacyExport.Load(_export.Folder), Toronto);
+
+        await Importer().ImportAsync(plan, _db.Database);
+
+        var rows = await _db.RowsAsync("SELECT direction, occurred_utc, utc_offset_minutes FROM punch WHERE legacy_shift_id = 40 ORDER BY direction");
+        Assert.Equal(["IN", "2026-03-08T07:30:00.000Z", -240L], rows[0]);
+        Assert.Equal(["OUT", "2026-03-08T08:00:00.000Z", -240L], rows[1]);
+        Assert.Equal(1L, await _db.ScalarAsync("SELECT count(*) FROM migration_issue WHERE legacy_pk = 40 AND code = 'DST_INVALID'"));
+        foreach (var view in await _db.RowsAsync("SELECT name FROM sqlite_master WHERE type = 'view' AND name LIKE 'verify%'"))
+            Assert.Equal(0L, await _db.ScalarAsync($"SELECT count(*) FROM {view[0]}"));
+    }
+
+    [Fact]
     public async Task Refuses_to_import_twice()
     {
         var plan = Plan();

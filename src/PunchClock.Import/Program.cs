@@ -158,11 +158,12 @@ internal static class Program
         return (TimeZoneInfo.Local, "this PC's time zone; the export did not record one");
     }
 
+    /// <summary>The schema checks offsets against Windows zone IDs, so an IANA ID is stored as its Windows equivalent.</summary>
     static TimeZoneInfo FindZone(string id)
     {
         try
         {
-            return TimeZoneInfo.FindSystemTimeZoneById(id);
+            return TimeZoneInfo.FindSystemTimeZoneById(TimeZoneInfo.TryConvertIanaIdToWindowsId(id, out var windows) ? windows : id);
         }
         catch (TimeZoneNotFoundException)
         {
@@ -182,9 +183,9 @@ internal static class Program
                 return (zone, source);
             try
             {
-                return (TimeZoneInfo.FindSystemTimeZoneById(answer), "entered at import");
+                return (FindZone(answer), "entered at import");
             }
-            catch (TimeZoneNotFoundException)
+            catch (UsageException)
             {
                 Console.WriteLine($"  '{answer}' is not a time zone on this PC.");
             }
