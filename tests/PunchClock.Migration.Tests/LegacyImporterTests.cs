@@ -126,6 +126,25 @@ public sealed class LegacyImporterTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Every_raw_row_left_out_is_recorded_as_skipped_so_the_batch_can_close()
+    {
+        _export.Employee(21, "Ed", "Park")
+            .Shift(50, 21, "2025-01-06 08:00:00", "2025-01-06 08:00:00")   // dummy
+            .Shift(51, null, "2025-01-07 08:00:00", "2025-01-07 12:00:00") // no employee
+            .Shift(52, 21, null, "2025-01-08 12:00:00")                    // no punch-in
+            .Shift(53, 99, "2025-01-09 08:00:00", "2025-01-09 12:00:00")   // orphan
+            .Shift(54, 21, "2025-01-10 08:00:00", "2025-01-10 12:00:00");
+        _export.Build();
+        var plan = ImportAnalyzer.Analyze(LegacyExport.Load(_export.Folder), Toronto);
+
+        var outcome = await Importer().ImportAsync(plan, _db.Database);
+
+        Assert.Equal(2, outcome.PunchesWritten);
+        Assert.NotNull(await _db.ScalarAsync("SELECT completed_utc FROM import_batch"));
+        Assert.Equal(4L, await _db.ScalarAsync("SELECT count(DISTINCT legacy_pk) FROM migration_issue WHERE legacy_table = 'Shift' AND disposition = 'SKIPPED'"));
+    }
+
+    [Fact]
     public async Task Refuses_to_import_twice()
     {
         var plan = Plan();
