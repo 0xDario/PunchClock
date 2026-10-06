@@ -247,9 +247,15 @@ public partial class AdminWindow : Window
 
         await RunAsync(async () =>
         {
-            await _services.Employees.SetActiveAsync(Actor, target.Id, isActive);
+            var result = await _services.Employees.SetActiveAsync(Actor, target.Id, isActive);
             await ReloadAsync();
-            Show($"{target.DisplayName} is now {(isActive ? "active" : "inactive")}.");
+            Show(result switch
+            {
+                EmployeeChangeResult.Changed => $"{target.DisplayName} is now {(isActive ? "active" : "inactive")}.",
+                EmployeeChangeResult.PunchedIn => $"{target.DisplayName} is punched in. Add their punch-out on the Corrections tab first.",
+                EmployeeChangeResult.DuplicateName => $"Another active employee is named {target.DisplayName}. Rename or deactivate one first.",
+                _ => "That employee no longer exists.",
+            }, isError: result != EmployeeChangeResult.Changed);
         });
     }
 

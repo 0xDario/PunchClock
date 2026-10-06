@@ -17,6 +17,18 @@ public enum PinChangeResult
     TooManyAttempts,
 }
 
+public enum EmployeeChangeResult
+{
+    Changed,
+    NotFound,
+
+    /// <summary>Deactivation refused: the employee is punched in. Close the shift first.</summary>
+    PunchedIn,
+
+    /// <summary>Reactivation refused: another active employee has the same name.</summary>
+    DuplicateName,
+}
+
 public enum PinResetResult
 {
     Reset,
@@ -48,7 +60,10 @@ public sealed class EmployeeService(IPunchClockStore store, IPinHasher pinHasher
     /// True unless the employee chose <paramref name="pin"/> themselves: whoever typed it in knows it,
     /// so by default the employee must replace it before their first punch is recorded.
     /// </param>
-    /// <exception cref="ArgumentException">A name is blank or the PIN violates <see cref="PinPolicy"/>.</exception>
+    /// <exception cref="ArgumentException">
+    /// A name is blank, the PIN violates <see cref="PinPolicy"/>, or an active employee already has
+    /// this name (the kiosk list shows names only, so two identical entries could be confused).
+    /// </exception>
     public async Task<long> CreateAsync(
         AuditActor by, string firstName, string lastName, string pin, bool pinMustChange = true, CancellationToken ct = default)
     {
@@ -62,19 +77,51 @@ public sealed class EmployeeService(IPunchClockStore store, IPinHasher pinHasher
         var employee = new NewEmployee(firstName.Trim(), lastName.Trim(), pinHasher.Hash(pin), pinMustChange);
 
         await using var uow = await store.BeginAsync(ct);
+        if (await HasActiveNamesakeAsync(uow, employee.FirstName, employee.LastName, exceptId: null, ct))
+        {
+            throw new ArgumentException(
+                $"An active employee named {employee.FirstName} {employee.LastName} already exists. Add a middle initial or similar so staff can tell them apart.");
+        }
+
         uow.ActAs(by);
         var id = await uow.AddEmployeeAsync(employee, ct);
         await uow.CommitAsync(ct);
         return id;
     }
 
-    public async Task SetActiveAsync(AuditActor by, long employeeId, bool isActive, CancellationToken ct = default)
+    public async Task<EmployeeChangeResult> SetActiveAsync(AuditActor by, long employeeId, bool isActive, CancellationToken ct = default)
     {
         await using var uow = await store.BeginAsync(ct);
+        var employee = await uow.FindEmployeeAsync(employeeId, ct);
+        if (employee is null)
+        {
+            return EmployeeChangeResult.NotFound;
+        }
+
+        // An inactive employee cannot punch out, so an open shift would stay open.
+        if (!isActive && ClockState.From(await uow.FindLatestPunchAsync(employeeId, ct)) == ClockStatus.In)
+        {
+            return EmployeeChangeResult.PunchedIn;
+        }
+
+        if (isActive && !employee.IsActive
+            && await HasActiveNamesakeAsync(uow, employee.FirstName, employee.LastName, employeeId, ct))
+        {
+            return EmployeeChangeResult.DuplicateName;
+        }
+
         uow.ActAs(by);
         await uow.SetEmployeeActiveAsync(employeeId, isActive, ct);
         await uow.CommitAsync(ct);
+        return EmployeeChangeResult.Changed;
     }
+
+    private static async Task<bool> HasActiveNamesakeAsync(
+        IPunchClockUnitOfWork uow, string firstName, string lastName, long? exceptId, CancellationToken ct) =>
+        (await uow.ListEmployeesAsync(activeOnly: true, ct)).Any(e =>
+            e.Id != exceptId
+            && string.Equals(e.FirstName.Trim(), firstName.Trim(), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(e.LastName.Trim(), lastName.Trim(), StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// An employee replaces their own PIN; also clears a forced PIN change. The new PIN must differ,

@@ -40,10 +40,24 @@ public interface IPunchClockUnitOfWork : IAsyncDisposable
     /// <summary>Wrong-PIN attempts for the employee within <paramref name="window"/> that no later success or reset has cleared.</summary>
     Task<int> CountRecentPinFailuresAsync(long employeeId, TimeSpan window, CancellationToken ct = default);
 
+    /// <summary>
+    /// Failed sign-ins for <paramref name="username"/> (case-insensitive) within <paramref name="window"/>
+    /// that no later sign-in by, or change to, account <paramref name="userId"/> has cleared.
+    /// </summary>
+    Task<int> CountRecentSignInFailuresAsync(string username, long? userId, TimeSpan window, CancellationToken ct = default);
+
     /// <summary>Sets a new PIN hash and <see cref="Employee.PinMustChange"/>.</summary>
     Task SetPinHashAsync(long employeeId, string pinHash, bool mustChange, CancellationToken ct = default);
 
     Task SetEmployeeActiveAsync(long employeeId, bool isActive, CancellationToken ct = default);
+
+    /// <summary>
+    /// The database clock, to the millisecond: the clock the schema stamps <c>recorded_utc</c> and
+    /// audit times with. Kiosk punch times come from here, not the .NET clock: on Windows SQLite reads
+    /// a coarser system clock than <see cref="DateTimeOffset.UtcNow"/>, so an app-side "now" can be a few
+    /// milliseconds ahead of the database's and the schema refuses it as a future punch.
+    /// </summary>
+    Task<DateTimeOffset> GetDatabaseUtcNowAsync(CancellationToken ct = default);
 
     /// <summary>Latest effective (not superseded) punch by time, ties broken by insertion order.</summary>
     Task<Punch?> FindLatestPunchAsync(long employeeId, CancellationToken ct = default);

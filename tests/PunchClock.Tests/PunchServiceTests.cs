@@ -14,14 +14,13 @@ public sealed class PunchServiceTests : DatabaseTest
         var id = await Db.AddEmployeeAsync();
 
         var punchIn = await Db.Punches.PunchAsync(id, "1234", PunchDirection.In);
-        Db.Clock.Advance(TimeSpan.FromSeconds(30));
         var punchOut = await Db.Punches.PunchAsync(id, "1234", PunchDirection.Out);
 
         Assert.True(punchIn.Accepted);
         Assert.True(punchOut.Accepted);
         Assert.Equal(PunchDirection.In, punchIn.Punch!.Direction);
         Assert.Equal(PunchDirection.Out, punchOut.Punch!.Direction);
-        Assert.InRange(punchOut.Punch.OccurredAtUtc - punchIn.Punch.OccurredAtUtc, TimeSpan.FromMilliseconds(29_999), TimeSpan.FromMilliseconds(30_001));
+        Assert.True(punchOut.Punch.OccurredAtUtc >= punchIn.Punch.OccurredAtUtc);
         Assert.Equal(PunchSource.Kiosk, punchOut.Punch.Source);
         Assert.Equal(2, await CountPunchesAsync(id));
         Assert.Equal(ClockStatus.Out, await Db.Employees.GetStatusAsync(id));
@@ -80,8 +79,16 @@ public sealed class PunchServiceTests : DatabaseTest
     public async Task Clock_running_behind_the_last_punch_is_rejected()
     {
         var id = await Db.AddEmployeeAsync();
-        await Db.Punches.PunchAsync(id, "1234", PunchDirection.In);
-        Db.Clock.Advance(TimeSpan.FromSeconds(-30));
+
+        // A punch taken while the system clock ran an hour fast, which the clock fix then put
+        // behind "now". The schema refuses future punches, so the guard is lifted to stage it.
+        var guard = await Db.ScalarAsync<string>("SELECT sql FROM sqlite_schema WHERE name = 'punch_bi';");
+        await Db.ExecuteAsync(AuditActor.ForEmployee(id), $"""
+            DROP TRIGGER punch_bi;
+            INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source)
+            VALUES ($id, 'IN', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 hour'), 0, 'kiosk');
+            {guard};
+            """, ("$id", id));
 
         var result = await Db.Punches.PunchAsync(id, "1234", PunchDirection.Out);
 
@@ -92,13 +99,15 @@ public sealed class PunchServiceTests : DatabaseTest
     [Fact]
     public async Task Database_rejects_a_kiosk_punch_far_from_its_own_clock()
     {
-        // The service trusts the app clock; the schema re-checks it against the database clock.
+        // The service takes the time from the database; a writer that supplies its own is checked.
         var id = await Db.AddEmployeeAsync();
-        Db.Clock.Advance(TimeSpan.FromHours(3));
-        var ahead = await Assert.ThrowsAsync<SqliteException>(() => Db.Punches.PunchAsync(id, "1234", PunchDirection.In));
+        Task Insert(string shift) => Db.ExecuteAsync(AuditActor.ForEmployee(id), """
+            INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source)
+            VALUES ($id, 'IN', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', $shift), 0, 'kiosk');
+            """, ("$id", id), ("$shift", shift));
 
-        Db.Clock.Advance(TimeSpan.FromHours(-6));
-        var behind = await Assert.ThrowsAsync<SqliteException>(() => Db.Punches.PunchAsync(id, "1234", PunchDirection.In));
+        var ahead = await Assert.ThrowsAsync<SqliteException>(() => Insert("+3 hours"));
+        var behind = await Assert.ThrowsAsync<SqliteException>(() => Insert("-3 hours"));
 
         Assert.Contains("in the future", ahead.Message);
         Assert.Contains("current time", behind.Message);
@@ -190,7 +199,7 @@ public sealed class PunchServiceTests : DatabaseTest
         var id = await Db.AddEmployeeAsync();
         // A slow PIN check widens the window between "read state" and "insert" so that,
         // without the up-front write lock, every attempt would see "out" before any insert.
-        var punches = new PunchService(Db.Store, new SlowPinHasher(TestDatabase.FastHasher), Db.Clock);
+        var punches = new PunchService(Db.Store, new SlowPinHasher(TestDatabase.FastHasher));
         using var start = new ManualResetEventSlim();
 
         var attempts = Enumerable.Range(0, 8).Select(_ => Task.Run(async () =>
@@ -214,7 +223,7 @@ public sealed class PunchServiceTests : DatabaseTest
         await using (var uow = await Db.Store.BeginAsync())
         {
             uow.ActAs(AuditActor.ForEmployee(id));
-            await uow.AppendKioskPunchAsync(id, PunchDirection.In, DateTimeOffset.UtcNow, 0);
+            await uow.AppendKioskPunchAsync(id, PunchDirection.In, await uow.GetDatabaseUtcNowAsync(), 0);
         }
 
         Assert.Equal(0, await CountPunchesAsync(id));
