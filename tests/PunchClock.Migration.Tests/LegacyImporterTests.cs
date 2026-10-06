@@ -4,6 +4,7 @@ using PunchClock.Migration.Analysis;
 using PunchClock.Data.Sqlite;
 using PunchClock.Migration.Database;
 using PunchClock.Migration.Export;
+using PunchClock.Migration.Reporting;
 
 namespace PunchClock.Migration.Tests;
 
@@ -89,6 +90,22 @@ public sealed class LegacyImporterTests : IAsyncLifetime
             "SELECT s.duration_sec FROM shift_v s JOIN employee e ON e.id = s.employee_id WHERE e.legacy_id = 15"));
         Assert.Equal("open", await _db.ScalarAsync(
             "SELECT s.status FROM shift_v s JOIN punch p ON p.id = s.in_punch_id WHERE p.legacy_shift_id = 34"));
+    }
+
+    [Fact]
+    public async Task An_employee_without_a_pin_gets_a_temporary_one_listed_only_in_the_export_side_report()
+    {
+        var plan = Plan();
+
+        var outcome = await Importer().ImportAsync(plan, _db.Database);
+
+        var pin = Assert.Single(outcome.TemporaryPins, p => p.Key == 16).Value;
+        Assert.Matches("^[0-9]{6}$", pin);
+        var hash = (string)(await _db.ScalarAsync("SELECT pin_hash FROM employee WHERE legacy_id = 16"))!;
+        Assert.True(FastHasher.Verify(pin, hash));
+        Assert.Contains($"PIN {pin}", ImportReport.Text(plan, "test", outcome, withTemporaryPins: true));
+        Assert.DoesNotContain(pin, ImportReport.Text(plan, "test", outcome));
+        Assert.Equal(0L, await _db.ScalarAsync($"SELECT count(*) FROM migration_issue WHERE detail_json LIKE '%{pin}%'"));
     }
 
     [Fact]

@@ -85,14 +85,13 @@ jobs:
           if (-not (Test-Path $iscc)) { throw 'ISCC.exe not found after install' }
           "ISCC=$iscc" >> $env:GITHUB_ENV
 
-      - name: Build installer and portable zip
+      - name: Build installer
         shell: pwsh
         run: |
           $v = '${{ steps.version.outputs.version }}'
           New-Item -ItemType Directory -Force dist | Out-Null
           & $env:ISCC "/DAppVersion=$v" "/DPublishDir=$PWD\publish" "/DOutputDir=$PWD\dist" installer\PunchClock.iss
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          Compress-Archive -Path publish\* -DestinationPath "dist\PunchClock-$v-$env:RID-portable.zip"
           Push-Location dist
           Get-ChildItem -File | Sort-Object Name | ForEach-Object {
             "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)"
@@ -142,8 +141,7 @@ jobs:
           | File | Use |
           |---|---|
           | \`PunchClock-Setup-$VERSION.exe\` | Installer. Includes the export and import tools for the switchover. |
-          | \`PunchClock-$VERSION-win-x64-portable.zip\` | Same files without an installer. |
-          | \`SHA256SUMS.txt\` | Checksums of the files above. |
+          | \`SHA256SUMS.txt\` | Checksum of the installer. |
 
           The installer is not code-signed yet, so Windows SmartScreen asks for confirmation: click **More info**, then **Run anyway**.
           EOF

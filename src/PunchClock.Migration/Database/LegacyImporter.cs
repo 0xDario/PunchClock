@@ -78,10 +78,16 @@ public sealed class LegacyImporter
 
         // Employees. Every legacy PIN must be treated as known: it was stored in
         // plain text under a password published in the README.
+        // An employee without one gets a temporary PIN, shown once in the import report:
+        // the app has no other way to give them a first PIN, and they must replace it.
         var employeeIds = new Dictionary<long, long>();
+        var temporaryPins = new SortedDictionary<long, string>();
         foreach (var e in plan.Employees)
         {
-            var pinHash = _hasher.Hash(e.LegacyPin ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(32)));
+            var pin = e.LegacyPin;
+            if (pin is null)
+                temporaryPins[e.LegacyEmployeeId] = pin = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6", CultureInfo.InvariantCulture);
+            var pinHash = _hasher.Hash(pin);
             employeeIds[e.LegacyEmployeeId] = await InsertAsync(connection, tx, """
                 INSERT INTO employee (legacy_id, first_name, last_name, pin_hash, pin_must_change, is_active)
                 VALUES ($legacy, $first, $last, $pin, 1, $active) RETURNING id
@@ -91,7 +97,7 @@ public sealed class LegacyImporter
 
             await IssueAsync(connection, tx, batchId, "Employee", e.LegacyEmployeeId, "PIN_RESET_REQUIRED", Disposition.Imported,
                 e.LegacyPin is null
-                    ? new Dictionary<string, object?> { ["reason"] = "no legacy PIN; set one before this employee can punch" }
+                    ? new Dictionary<string, object?> { ["reason"] = "no legacy PIN; temporary PIN issued in the import report" }
                     : new Dictionary<string, object?> { ["pin_digits"] = e.LegacyPin.Length },
                 ct);
         }
@@ -137,7 +143,7 @@ public sealed class LegacyImporter
             CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal);
 
         await tx.CommitAsync(ct);
-        return new ImportOutcome(database.Path, batchId, importedAt, punches, seq, hash);
+        return new ImportOutcome(database.Path, batchId, importedAt, punches, seq, hash, temporaryPins);
     }
 
     static Export.ManifestTable Table(ImportPlan plan, string name) =>

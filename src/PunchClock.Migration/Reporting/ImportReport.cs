@@ -18,10 +18,11 @@ public static class ImportReport
     static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
     static readonly UTF8Encoding Utf8Bom = new(true);
 
-    public static void Write(string directory, ImportPlan plan, string timeZoneSource, ImportOutcome? outcome)
+    /// <param name="withTemporaryPins">List the temporary PINs. Only for the copy that goes with the export, never the one left on the PC.</param>
+    public static void Write(string directory, ImportPlan plan, string timeZoneSource, ImportOutcome? outcome, bool withTemporaryPins = false)
     {
         Directory.CreateDirectory(directory);
-        File.WriteAllText(Path.Combine(directory, ReportFile), Text(plan, timeZoneSource, outcome), Utf8Bom);
+        File.WriteAllText(Path.Combine(directory, ReportFile), Text(plan, timeZoneSource, outcome, withTemporaryPins), Utf8Bom);
         WriteCsv(Path.Combine(directory, FindingsFile),
             ["level", "code", "table", "legacy_id", "legacy_employee_id", "description", "detail"],
             plan.Findings.Select(f => new[]
@@ -45,7 +46,7 @@ public static class ImportReport
             }));
     }
 
-    public static string Text(ImportPlan plan, string timeZoneSource, ImportOutcome? outcome)
+    public static string Text(ImportPlan plan, string timeZoneSource, ImportOutcome? outcome, bool withTemporaryPins = false)
     {
         var m = plan.Export.Manifest;
         var t = plan.Totals;
@@ -63,6 +64,22 @@ public static class ImportReport
             Line(sb, "Audit log head", $"seq {outcome.ChainSeq}, hash {outcome.ChainHash}");
             sb.AppendLine("  Print this page and keep it with the PunchClock.accdb backup. The audit log head proves");
             sb.AppendLine("  later that nothing imported today was altered.");
+        }
+        if (outcome is { TemporaryPins.Count: > 0 })
+        {
+            sb.AppendLine();
+            sb.AppendLine($"Temporary PINs ({outcome.TemporaryPins.Count}): these employees had no PIN in the old app.");
+            if (withTemporaryPins)
+            {
+                foreach (var (id, pin) in outcome.TemporaryPins)
+                    sb.AppendLine($"  Employee {id.ToString(Inv),-8}{Clip(Name(plan, id), 27),-28}PIN {pin}");
+                sb.AppendLine("  Give each PIN to its employee only. The app asks them for a new PIN after their first punch.");
+            }
+            else
+            {
+                sb.AppendLine("  Listed only in the report written next to the export, and on screen at import.");
+            }
+            sb.AppendLine();
         }
         Line(sb, "Export folder", plan.Export.Folder);
         Line(sb, "Exported by", $"{m.Tool}, {m.ExportedAtUtc}");
@@ -130,6 +147,12 @@ public static class ImportReport
         }
     }
 
+    static string Name(ImportPlan plan, long legacyId)
+    {
+        var e = plan.Employees.Single(e => e.LegacyEmployeeId == legacyId);
+        return $"{e.FirstName} {e.LastName}".Trim();
+    }
+
     static void Line(StringBuilder sb, string label, string value) => sb.AppendLine($"{label + ":",-20}{value}");
 
     static string Clip(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "~";
@@ -160,4 +183,12 @@ public static class ImportReport
 
 /// <summary>What an import wrote, for the report.</summary>
 /// <param name="ChainSeq">Audit log head after the import; with <paramref name="ChainHash"/>, the first external anchor.</param>
-public sealed record ImportOutcome(string DatabasePath, long ImportRunId, DateTime ImportedAtUtc, int PunchesWritten, long ChainSeq, string ChainHash);
+/// <param name="TemporaryPins">Legacy employee ID to the PIN issued because the old app had none. Never stored in plain text.</param>
+public sealed record ImportOutcome(
+    string DatabasePath,
+    long ImportRunId,
+    DateTime ImportedAtUtc,
+    int PunchesWritten,
+    long ChainSeq,
+    string ChainHash,
+    IReadOnlyDictionary<long, string> TemporaryPins);

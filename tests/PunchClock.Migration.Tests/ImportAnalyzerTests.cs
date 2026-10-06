@@ -73,6 +73,45 @@ public sealed class ImportAnalyzerTests : IDisposable
     }
 
     [Fact]
+    public void Takes_the_live_punch_in_from_the_highest_shift_id_like_the_old_app()
+    {
+        // Shift 11 was added later with an earlier time: the old app shows Ann punched out,
+        // but shift 10's punch-in is the latest by time, so the new app would show her in.
+        _export.Employee(1, "Ann", "Lee")
+            .Shift(10, 1, "2025-01-08 08:00:00", null)
+            .Shift(11, 1, "2025-01-07 08:00:00", "2025-01-07 16:00:00")
+            .Employee(2, "Bo", "Kim")
+            .Shift(20, 2, "2025-01-07 08:00:00", "2025-01-07 16:00:00")
+            .Shift(21, 2, "2025-01-08 08:00:00", null);
+
+        var plan = Analyze();
+
+        Assert.Contains(FindingCode.OpenShiftStale, Codes(plan, 10));
+        Assert.DoesNotContain(FindingCode.OpenShiftCurrent, Codes(plan, 10));
+        var differs = Assert.Single(plan.Findings, f => f.Code == FindingCode.PunchStateDiffers);
+        Assert.Equal(1, differs.LegacyEmployeeId);
+        Assert.Contains("old app shows this employee punched out", differs.Message);
+        Assert.Contains(FindingCode.OpenShiftCurrent, Codes(plan, 21));
+    }
+
+    [Fact]
+    public void Flags_every_shift_nested_inside_a_long_one()
+    {
+        _export.Employee(1, "Ann", "Lee")
+            .Shift(10, 1, "2025-01-06 08:00:00", "2025-01-06 20:00:00")
+            .Shift(11, 1, "2025-01-06 09:00:00", "2025-01-06 10:00:00")
+            .Shift(12, 1, "2025-01-06 11:00:00", "2025-01-06 12:00:00")
+            .Shift(13, 1, "2025-01-06 21:00:00", "2025-01-06 22:00:00");
+
+        var plan = Analyze();
+
+        Assert.DoesNotContain(FindingCode.OverlappingShift, Codes(plan, 10));
+        Assert.Contains(FindingCode.OverlappingShift, Codes(plan, 11));
+        Assert.Contains(FindingCode.OverlappingShift, Codes(plan, 12));
+        Assert.DoesNotContain(FindingCode.OverlappingShift, Codes(plan, 13));
+    }
+
+    [Fact]
     public void Flags_negative_long_overlapping_and_out_of_order_shifts()
     {
         _export.Employee(1, "Ann", "Lee")
