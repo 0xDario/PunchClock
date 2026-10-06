@@ -12,8 +12,16 @@ public static class ImportAnalyzer
 {
     public static readonly TimeSpan LongShiftThreshold = TimeSpan.FromHours(16);
 
-    public static ImportPlan Analyze(LegacyExport export, TimeZoneInfo timeZone)
+    /// <summary>
+    /// NewStaffForm read DateTime.Now twice, so its dummy row can end a few ms after it
+    /// starts. Same bound as the exporter's validator (PR #4): 0 to under 1 s.
+    /// </summary>
+    public static readonly TimeSpan ZeroLengthBound = TimeSpan.FromSeconds(1);
+
+    /// <param name="nowUtc">The import clock; times after it cannot be stored. Defaults to now.</param>
+    public static ImportPlan Analyze(LegacyExport export, TimeZoneInfo timeZone, DateTime? nowUtc = null)
     {
+        var now = nowUtc ?? DateTime.UtcNow;
         var findings = new List<Finding>();
 
         void Add(FindingCode code, string table, long? id, long? employeeId, string detail) =>
@@ -27,6 +35,9 @@ public static class ImportAnalyzer
             Add(FindingCode.UnmappedColumn, column.Split('.')[0], null, null, $"{column} stays in the export folder but is not imported.");
         if (!export.SnapshotVerified)
             Add(FindingCode.SnapshotMissing, "Export", null, null, "Keep the backup of PunchClock.accdb; it is the evidence for pre-migration data.");
+
+        // The old app compared PINs as numbers, so "0123" was stored and matched as 123.
+        var longestPin = export.Employees.Max(e => e.PinCode?.Length) ?? 0;
 
         // Employees, legacy IDs kept.
         var employees = new List<PlannedEmployee>();
@@ -46,7 +57,11 @@ public static class ImportAnalyzer
             if (e.PinCode is null)
                 Add(FindingCode.PinMissing, "Employee", e.EmployeeId, e.EmployeeId, "The import issues a temporary PIN, listed in the import report.");
             else if (e.PinCode.Length < 3)
-                Add(FindingCode.PinLostLeadingZeros, "Employee", e.EmployeeId, e.EmployeeId, $"Stored PIN has {e.PinCode.Length} digit(s).");
+                Add(FindingCode.PinLostLeadingZeros, "Employee", e.EmployeeId, e.EmployeeId,
+                    $"Stored PIN has {e.PinCode.Length} digit(s). {LeadingZeroAdvice}");
+            else if (e.PinCode.Length < longestPin)
+                Add(FindingCode.PinMayHaveLostLeadingZeros, "Employee", e.EmployeeId, e.EmployeeId,
+                    $"Stored PIN has {e.PinCode.Length} digits; the longest PIN in the old app has {longestPin}. {LeadingZeroAdvice}");
             if (string.IsNullOrWhiteSpace(e.FirstName) || string.IsNullOrWhiteSpace(e.LastName))
                 Add(FindingCode.MissingName, "Employee", e.EmployeeId, e.EmployeeId, $"First '{e.FirstName}', last '{e.LastName}'. Imported as recorded.");
         }
@@ -84,7 +99,7 @@ public static class ImportAnalyzer
                 continue;
             }
 
-            if (s.TimeOut is { } tout && tout == tin)
+            if (s.TimeOut is { } tout && tout >= tin && tout - tin < ZeroLengthBound)
             {
                 // The old app's NewStaffForm wrote one of these for every new employee.
                 var isFirst = d.Employee is not null && !export.Shifts.Any(o => o.EmployeeId == s.EmployeeId && o.ShiftId < s.ShiftId);
@@ -97,6 +112,9 @@ public static class ImportAnalyzer
             d.In = Resolve(tin, timeZone, c => Flag(d, c, $"Punch in {Fmt(tin)}."));
             if (s.TimeOut is { } t)
                 d.Out = Resolve(t, timeZone, c => Flag(d, c, $"Punch out {Fmt(t)}."));
+            // Usually a PC clock set wrong once. The database refuses punches after its own clock.
+            if (d.In.Value.Utc > now || d.Out?.Utc > now)
+                Flag(d, FindingCode.FutureTime, $"{Fmt(tin)} to {(s.TimeOut is { } f ? Fmt(f) : "(open)")} is after the import time.");
         }
 
         // Every shift row counts here, skipped ones too: the old app read state from the row, not its hours.
@@ -243,6 +261,10 @@ public static class ImportAnalyzer
 
         return new ResolvedTime(local, DateTime.SpecifyKind(local - offset, DateTimeKind.Utc), (int)offset.TotalMinutes);
     }
+
+    const string LeadingZeroAdvice =
+        "If this employee's PIN started with 0, they must type it without the leading zero(s) at their first punch " +
+        "(123 for 0123), then choose a new PIN. Warn them, or reset their PIN on the Employees tab before cutover.";
 
     static string Fmt(DateTime t) => t.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
 

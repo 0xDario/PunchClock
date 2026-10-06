@@ -38,6 +38,32 @@ public sealed class ImportAnalyzerTests : IDisposable
     }
 
     [Fact]
+    public void A_dummy_shift_a_few_milliseconds_long_is_still_a_dummy()
+    {
+        _export.Employee(1, "Ann", "Lee")
+            .Shift(10, 1, "2025-01-06 08:00:00.000", "2025-01-06 08:00:00.004")
+            .Shift(11, 1, "2025-01-07 08:00:00.000", "2025-01-07 08:00:01.000");
+
+        var plan = Analyze();
+
+        Assert.Equal([FindingCode.DummyShift], Codes(plan, 10));
+        Assert.Equal(Disposition.Imported, plan.Shifts.Single(s => s.Source.ShiftId == 11).Disposition);
+    }
+
+    [Fact]
+    public void Flags_a_shift_dated_after_the_import_and_the_importer_refuses_it()
+    {
+        _export.Employee(1, "Ann", "Lee")
+            .Shift(10, 1, "2025-01-01 08:00:00", "2025-01-01 16:00:00")
+            .Shift(11, 1, "2099-01-01 08:00:00", "2099-01-01 16:00:00");
+
+        var plan = Analyze();
+
+        Assert.Contains(FindingCode.FutureTime, Codes(plan, 11));
+        Assert.Equal(FindingLevel.Review, plan.Findings.Single(f => f.Code == FindingCode.FutureTime).Level);
+    }
+
+    [Fact]
     public void Skips_orphan_shifts_the_old_report_never_counted()
     {
         _export.Employee(1, "Ann", "Lee")
@@ -164,17 +190,21 @@ public sealed class ImportAnalyzerTests : IDisposable
     {
         _export.Employee(1, "Ann", "Lee", pin: "42")
             .Employee(2, "ann", "lee", pin: null)
-            .Employee(3, " ", "Kim");
+            .Employee(3, " ", "Kim")
+            .Employee(4, "Bo", "Ng", pin: "123");
 
         var plan = Analyze();
 
         Assert.Equal("42", plan.Employees[0].LegacyPin);
         Assert.Contains(plan.Findings, f => f.Code == FindingCode.PinLostLeadingZeros && f.LegacyId == 1);
         Assert.Contains(plan.Findings, f => f.Code == FindingCode.PinMissing && f.LegacyId == 2);
+        // 1234 elsewhere, so 123 may have been 0123.
+        Assert.Contains(plan.Findings, f => f.Code == FindingCode.PinMayHaveLostLeadingZeros && f.LegacyId == 4);
+        Assert.DoesNotContain(plan.Findings, f => f.Code == FindingCode.PinMayHaveLostLeadingZeros && f.LegacyId == 3);
         Assert.Equal(2, plan.Findings.Count(f => f.Code == FindingCode.DuplicateName));
         Assert.Contains(plan.Findings, f => f.Code == FindingCode.MissingName && f.LegacyId == 3);
         Assert.Equal(" ", plan.Employees[2].FirstName);
-        Assert.Equal(3, plan.Findings.Count(f => f.Code == FindingCode.NoShifts));
+        Assert.Equal(4, plan.Findings.Count(f => f.Code == FindingCode.NoShifts));
     }
 
     [Fact]

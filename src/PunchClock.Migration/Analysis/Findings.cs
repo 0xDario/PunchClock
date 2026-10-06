@@ -24,10 +24,12 @@ public enum FindingCode
     DstAmbiguousTime,
     DstNonexistentTime,
     CrossesDstChange,
+    FutureTime,
 
     // Employee
     PinMissing,
     PinLostLeadingZeros,
+    PinMayHaveLostLeadingZeros,
     MissingName,
     DuplicateName,
     NoShifts,
@@ -70,8 +72,8 @@ public static class FindingInfo
 
     public static string Describe(FindingCode code) => code switch
     {
-        FindingCode.DummyShift => "Skipped: zero-length shift the old app created with each new employee",
-        FindingCode.ZeroLengthShift => "Skipped: zero-length shift (punch in and out at the same instant)",
+        FindingCode.DummyShift => "Skipped: zero-length (under 1 s) shift the old app created with each new employee",
+        FindingCode.ZeroLengthShift => "Skipped: zero-length shift (punch in and out within 1 s)",
         FindingCode.OpenShiftCurrent => "Employee is punched in right now (highest-ID shift has no punch out)",
         FindingCode.OpenShiftStale => "Missed punch out: shift never closed, later shifts exist",
         FindingCode.OrphanShift => "Skipped: shift belongs to an employee ID that does not exist (the old report never counted it)",
@@ -86,6 +88,8 @@ public static class FindingInfo
         FindingCode.CrossesDstChange => "Shift spans a daylight-saving change; real hours differ from the old report",
         FindingCode.PinMissing => "Employee has no PIN; a temporary PIN is issued at import",
         FindingCode.PinLostLeadingZeros => "PIN is shorter than 3 digits, so Access dropped its leading zeros",
+        FindingCode.PinMayHaveLostLeadingZeros => "PIN is shorter than others; it may have started with 0, which Access dropped",
+        FindingCode.FutureTime => "Shift is dated after the import (the PC clock was probably wrong); the import cannot store it",
         FindingCode.MissingName => "Employee first or last name is empty",
         FindingCode.DuplicateName => "Another employee has the same name",
         FindingCode.NoShifts => "Employee has no shifts",
