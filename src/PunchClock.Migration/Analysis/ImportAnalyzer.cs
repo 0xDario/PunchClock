@@ -44,7 +44,7 @@ public static class ImportAnalyzer
             byLegacyId[e.EmployeeId] = planned;
 
             if (e.PinCode is null)
-                Add(FindingCode.PinMissing, "Employee", e.EmployeeId, e.EmployeeId, "Set a PIN in the new app before this employee can punch.");
+                Add(FindingCode.PinMissing, "Employee", e.EmployeeId, e.EmployeeId, "The import issues a temporary PIN, listed in the import report.");
             else if (e.PinCode.Length < 3)
                 Add(FindingCode.PinLostLeadingZeros, "Employee", e.EmployeeId, e.EmployeeId, $"Stored PIN has {e.PinCode.Length} digit(s).");
             if (string.IsNullOrWhiteSpace(e.FirstName) || string.IsNullOrWhiteSpace(e.LastName))
@@ -99,6 +99,12 @@ public static class ImportAnalyzer
                 d.Out = Resolve(t, timeZone, c => Flag(d, c, $"Punch out {Fmt(t)}."));
         }
 
+        // Every shift row counts here, skipped ones too: the old app read state from the row, not its hours.
+        var lastById = drafts
+            .Where(d => d.Employee is not null)
+            .GroupBy(d => d.Employee!)
+            .ToDictionary(g => g.Key, g => g.MaxBy(d => d.Source.ShiftId)!);
+
         foreach (var group in drafts.Where(d => d.In is not null).GroupBy(d => d.Employee!))
         {
             var byId = group.OrderBy(d => d.Source.ShiftId).ToList();
@@ -118,23 +124,26 @@ public static class ImportAnalyzer
                     Flag(d, FindingCode.CrossesDstChange, $"Old report counts {Hours(length)} h, actual elapsed time is {Hours(tout.Utc - tin.Utc)} h.");
             }
 
-            // The employee's latest shift by time is a live punch-in; any other
-            // open shift is a punch-out that never happened.
-            var latest = byTime[^1];
+            // The old app took punch state from the employee's highest ShiftID, so only
+            // that shift is a live punch-in; any other open shift is a missed punch-out.
+            var last = lastById[group.Key];
             foreach (var d in byTime.Where(d => d.Out is null))
             {
-                if (ReferenceEquals(d, latest))
-                    Flag(d, FindingCode.OpenShiftCurrent, $"Punched in at {Fmt(d.In!.Value.Local)}. The new app starts with this employee punched in.");
+                if (ReferenceEquals(d, last))
+                    Flag(d, FindingCode.OpenShiftCurrent, $"Punched in at {Fmt(d.In!.Value.Local)}. The old app shows this employee punched in.");
                 else
                     Flag(d, FindingCode.OpenShiftStale, $"Punched in at {Fmt(d.In!.Value.Local)} and never out.");
             }
 
-            for (var k = 1; k < byTime.Count; k++)
+            // Compare each shift with the one that reaches latest so far, so a long
+            // shift is caught overlapping every shift nested inside it.
+            Draft? reach = null;
+            foreach (var cur in byTime)
             {
-                var prev = byTime[k - 1];
-                var cur = byTime[k];
-                if (prev.Out?.Local is { } end && end > cur.In!.Value.Local && end > prev.In!.Value.Local)
-                    Flag(cur, FindingCode.OverlappingShift, $"Starts {Fmt(cur.In.Value.Local)}, before shift {prev.Source.ShiftId} ends at {Fmt(end)}.");
+                if (reach?.Out?.Local is { } end && end > cur.In!.Value.Local)
+                    Flag(cur, FindingCode.OverlappingShift, $"Starts {Fmt(cur.In.Value.Local)}, before shift {reach.Source.ShiftId} ends at {Fmt(end)}.");
+                if (cur.Out?.Local is { } o && o > cur.In!.Value.Local && (reach is null || o > reach.Out!.Value.Local))
+                    reach = cur;
             }
 
             // The old app took punch state from the highest ShiftID, so an ID order
@@ -147,6 +156,32 @@ public static class ImportAnalyzer
                 if (maxIn is null || d.In!.Value.Local > maxIn.In!.Value.Local)
                     maxIn = d;
             }
+        }
+
+        // The new app reads state from the latest punch by time, the old app from the
+        // highest ShiftID. Where the two disagree the kiosk would flip someone's state.
+        foreach (var (employee, last) in lastById)
+        {
+            var oldIn = last.Source.TimeOut is null;
+            var latest = drafts
+                .Where(d => d.Employee == employee && d.In is not null && !d.Flags.Any(FindingInfo.Skips))
+                .OrderBy(d => d.Source.ShiftId)
+                .SelectMany(d => d.Out is { } o
+                    ? new[] { (At: d.In!.Value, In: true, Shift: d), (At: o, In: false, Shift: d) }
+                    : [(At: d.In!.Value, In: true, Shift: d)])
+                .Select((p, order) => (p.At, p.In, p.Shift, Order: order))
+                .OrderBy(p => p.At.Utc)
+                .ThenBy(p => p.Order)
+                .LastOrDefault();
+            var newIn = latest.Shift is not null && latest.In;
+            if (oldIn == newIn)
+                continue;
+            var why = latest.Shift is null
+                ? "it has no punches for this employee"
+                : $"its latest punch is the punch {(latest.In ? "in" : "out")} of shift {latest.Shift.Source.ShiftId} at {Fmt(latest.At.Local)}";
+            Add(FindingCode.PunchStateDiffers, "Employee", employee.LegacyEmployeeId, employee.LegacyEmployeeId,
+                $"The old app shows this employee punched {(oldIn ? "in" : "out")} (shift {last.Source.ShiftId} has the highest ID). " +
+                $"The new app will show punched {(newIn ? "in" : "out")}, because {why}. Correct the punches before this employee next punches.");
         }
 
         var shifts = drafts.Select(d => new PlannedShift(

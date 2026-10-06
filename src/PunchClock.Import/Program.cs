@@ -18,7 +18,8 @@ namespace PunchClock.Import;
 /// PunchClock.Import check  &lt;export folder or zip&gt; [--time-zone ID] [--report DIR]
 /// PunchClock.Import import &lt;export folder or zip&gt; [--time-zone ID] [--report DIR] [--db PATH] --yes
 /// </code>
-/// Exit codes: 0 ok, 1 unexpected error, 2 export rejected, 3 import refused, 4 stopped by the user.
+/// Exit codes: 0 ok, 1 unexpected error, 2 export rejected, 3 import refused, 4 stopped by the user,
+/// 5 imported but a report file could not be written.
 /// </summary>
 internal static class Program
 {
@@ -94,22 +95,58 @@ internal static class Program
         var importer = new LegacyImporter(new Pbkdf2PinHasher(), $"PunchClock.Import {Version}");
         var outcome = await importer.ImportAsync(plan, database);
 
-        // Keep the evidence next to the database, where backups of it will pick it up.
-        var stamp = outcome.ImportedAtUtc.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-        var kept = Path.Combine(Path.GetDirectoryName(database.Path)!, "imports", $"import-{stamp}");
-        ImportReport.Write(kept, plan, zoneSource, outcome);
-        File.Copy(Path.Combine(source.Folder, "manifest.json"), Path.Combine(kept, "manifest.json"));
-        var report = reportBase + "-import";
-        ImportReport.Write(report, plan, zoneSource, outcome);
-
+        // Committed. From here on nothing may claim the import failed: a second
+        // import is refused, so the operator must not fall back to the old app.
         Console.WriteLine();
         Console.WriteLine($"Imported {plan.Employees.Count} employees and {outcome.PunchesWritten} punches into {outcome.DatabasePath}");
         Console.WriteLine($"Audit log head: seq {outcome.ChainSeq}, {outcome.ChainHash}");
+        if (outcome.TemporaryPins.Count > 0)
+        {
+            Console.WriteLine("Temporary PINs for employees who had none in the old app (they choose a new one after their first punch):");
+            foreach (var (id, pin) in outcome.TemporaryPins)
+                Console.WriteLine($"  Employee {id}: {pin}");
+        }
+
+        // Keep the evidence next to the database, where backups of it will pick it up.
+        // That copy never lists the temporary PINs; the one next to the export does.
+        var stamp = outcome.ImportedAtUtc.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+        var kept = Path.Combine(Path.GetDirectoryName(database.Path)!, "imports", $"import-{stamp}");
+        var report = reportBase + "-import";
+        var keptOk = TryWrite("copy kept with the database", kept, () =>
+        {
+            ImportReport.Write(kept, plan, zoneSource, outcome);
+            File.Copy(Path.Combine(source.Folder, "manifest.json"), Path.Combine(kept, "manifest.json"));
+        });
+        var reportOk = TryWrite("report", report, () => ImportReport.Write(report, plan, zoneSource, outcome, withTemporaryPins: true));
+
+        if (!keptOk || !reportOk)
+        {
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("The import itself is complete and saved; only the files above are missing.");
+            Console.Error.WriteLine("Do not go back to the old app. Write down the audit log head and any temporary PINs shown above,");
+            Console.Error.WriteLine("then rerun `PunchClock.Import check` on the export to recreate the hours report.");
+            return interactive ? Done(5, "") : 5;
+        }
+
         Console.WriteLine($"Report: {Path.Combine(report, ImportReport.ReportFile)}");
         Console.WriteLine($"Copy kept with the database: {kept}");
         if (interactive)
             OpenInNotepad(Path.Combine(report, ImportReport.ReportFile));
         return interactive ? Done(0, "Done. Print the report and compare its hours with the old app's report.") : 0;
+    }
+
+    static bool TryWrite(string what, string directory, Action write)
+    {
+        try
+        {
+            write();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Could not write the {what} to {directory}: {ex.Message}");
+            return false;
+        }
     }
 
     static (TimeZoneInfo Zone, string Source) ResolveZone(string? requested, string? fromManifest)

@@ -31,6 +31,7 @@ public enum FindingCode
     MissingName,
     DuplicateName,
     NoShifts,
+    PunchStateDiffers,
 
     // Export
     IsActiveColumnMissing,
@@ -71,7 +72,7 @@ public static class FindingInfo
     {
         FindingCode.DummyShift => "Skipped: zero-length shift the old app created with each new employee",
         FindingCode.ZeroLengthShift => "Skipped: zero-length shift (punch in and out at the same instant)",
-        FindingCode.OpenShiftCurrent => "Employee is punched in right now (latest shift has no punch out)",
+        FindingCode.OpenShiftCurrent => "Employee is punched in right now (highest-ID shift has no punch out)",
         FindingCode.OpenShiftStale => "Missed punch out: shift never closed, later shifts exist",
         FindingCode.OrphanShift => "Skipped: shift belongs to an employee ID that does not exist (the old report never counted it)",
         FindingCode.MissingEmployeeId => "Skipped: shift has no employee ID",
@@ -83,11 +84,12 @@ public static class FindingInfo
         FindingCode.DstAmbiguousTime => "Time falls in the repeated hour when clocks go back",
         FindingCode.DstNonexistentTime => "Time falls in the skipped hour when clocks go forward",
         FindingCode.CrossesDstChange => "Shift spans a daylight-saving change; real hours differ from the old report",
-        FindingCode.PinMissing => "Employee has no PIN",
+        FindingCode.PinMissing => "Employee has no PIN; a temporary PIN is issued at import",
         FindingCode.PinLostLeadingZeros => "PIN is shorter than 3 digits, so Access dropped its leading zeros",
         FindingCode.MissingName => "Employee first or last name is empty",
         FindingCode.DuplicateName => "Another employee has the same name",
         FindingCode.NoShifts => "Employee has no shifts",
+        FindingCode.PunchStateDiffers => "New app will show a different punched in/out state than the old app",
         FindingCode.IsActiveColumnMissing => "Export has no IsActive column (data predates Oct 2023); everyone imported as active",
         FindingCode.UnmappedColumn => "Export has a column the importer does not map",
         FindingCode.SnapshotMissing => "The .accdb snapshot is not in the export folder, so its hash could not be re-checked",

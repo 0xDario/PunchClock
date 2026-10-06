@@ -87,6 +87,18 @@ public sealed class LegacyExportTests : IDisposable
     }
 
     [Fact]
+    public void Rejects_an_active_flag_that_disagrees_with_the_access_sum()
+    {
+        // Same nullity, different value: only the sum can tell.
+        var manifest = Sample().Build();
+        manifest["tables"]![0]!["control_totals"]!["IsActive"]!["sum"] = "2";
+        _export.WriteManifest(manifest);
+
+        var ex = Assert.Throws<ExportFormatException>(() => LegacyExport.Load(_export.Folder));
+        Assert.Contains("control total for IsActive", ex.Message);
+    }
+
+    [Fact]
     public void Rejects_an_id_range_that_disagrees_with_the_manifest()
     {
         var manifest = Sample().Build();

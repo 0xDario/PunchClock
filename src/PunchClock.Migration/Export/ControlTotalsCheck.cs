@@ -22,8 +22,8 @@ internal static class ControlTotalsCheck
             Text(employeeTable, et, "FirstName", employees.Select(e => e.FirstName));
             Text(employeeTable, et, "LastName", employees.Select(e => e.LastName));
             Number(employeeTable, et, "PinCode", employees.Select(e => e.PinCode is null ? (long?)null : long.Parse(e.PinCode, CultureInfo.InvariantCulture)));
-            if (et.TryGetValue("IsActive", out var active))
-                Count(employeeTable, "IsActive", active, employees.Count(e => e.IsActive is not null));
+            // Raw values, so the sum is Access's own (Yes is -1); the exporter sends no sum for Yes/No columns.
+            Number(employeeTable, et, "IsActive", employees.Select(e => e.IsActiveRaw));
         }
 
         if (shiftTable.ControlTotals is { } st)

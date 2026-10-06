@@ -64,9 +64,9 @@ One-time switchover of a PC running the old app (v1.x, Access database) to v2. D
 
 8. **Finish setup as admin.** In PunchClock click **Admin** and sign in. Set the site time zone to the one the import used (shown in the import report). Deactivate the `migration` account with a reason such as "Cutover done", so nothing can import into this database again. Check that every employee is listed.
 
-9. **Switch over.** Anyone still punched in at the export shows as punched in. PINs carry over, but the old app stored them as numbers, so a PIN that started with 0 lost that digit (`0123` is now `123`). Because the old file kept PINs in plain text, every imported employee is asked to choose a new PIN after their next punch.
+9. **Switch over.** Anyone still punched in at the export shows as punched in; the report's *Needs review* list names anyone whose punched in/out state would differ, so fix those first. PINs carry over, but the old app stored them as numbers, so a PIN that started with 0 lost that digit (`0123` is now `123`). An employee who had no PIN gets a temporary one, printed under *Temporary PINs* in the import report; hand it to them in person. Because the old file kept PINs in plain text, every imported employee is asked to choose a new PIN after their next punch.
 
-10. **Retire the old app.** Delete its Desktop and Startup shortcuts and rename its folder to `PunchClock-v1-retired` so nobody starts it by habit; a punch there would be missing from v2. Keep the `.accdb` backup, the export zip and the printed reports for as long as payroll records must be kept where you are. The zip holds every old PIN in plain text, so store it on the USB stick, not on the shared PC, and delete both Desktop copies (the `legacy-export-<timestamp>` folder and its zip). A copy of the import report and manifest also stays in `C:\ProgramData\PunchClock\imports`.
+10. **Retire the old app.** Delete its Desktop and Startup shortcuts and rename its folder to `PunchClock-v1-retired` so nobody starts it by habit; a punch there would be missing from v2. Keep the `.accdb` backup, the export zip and the printed reports for as long as payroll records must be kept where you are. The zip holds every old PIN in plain text and the `-import` report folder holds any temporary PINs, so store them on the USB stick, not on the shared PC, and delete the Desktop copies (the `legacy-export-<timestamp>` folder, its zip and both report folders). A copy of the import report and manifest also stays in `C:\ProgramData\PunchClock\imports`.
 
 What the import does with the old data, in short:
 
@@ -89,6 +89,6 @@ From a command prompt, the same importer runs unattended:
 
 1. Set `<Version>` in `src/Directory.Build.props` and merge to `master`.
 2. Tag it: `git tag v2.0.0 && git push origin v2.0.0`. v1.x tags are the legacy app.
-3. `.github/workflows/release.yml` runs the tests, publishes the app and the importer self-contained for `win-x64`, bundles the exporter, builds `PunchClock-Setup-<version>.exe` (Inno Setup, `installer/PunchClock.iss`) plus a portable zip and `SHA256SUMS.txt`, and attaches them to a **draft** release. Check the draft, then publish it.
+3. `.github/workflows/release.yml` runs the tests, publishes the app and the importer self-contained for `win-x64`, bundles the exporter, builds `PunchClock-Setup-<version>.exe` (Inno Setup, `installer/PunchClock.iss`) and `SHA256SUMS.txt`, and attaches them to a **draft** release. Check the draft, then publish it.
 
 Pull requests that touch packaging build the same installer as a workflow artifact, without a release.
