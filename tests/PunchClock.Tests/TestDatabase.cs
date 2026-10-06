@@ -26,6 +26,7 @@ public sealed class TestDatabase : IAsyncLifetime
         Punches = new PunchService(Store, FastHasher, Clock);
         Accounts = new AccountService(Store, FastHasher);
         Site = new SiteSettingsService(Store);
+        Corrections = new PunchCorrectionService(Store, Clock);
     }
 
     public SqliteDatabase Database { get; }
@@ -45,6 +46,8 @@ public sealed class TestDatabase : IAsyncLifetime
     public AccountService Accounts { get; }
 
     public SiteSettingsService Site { get; }
+
+    public PunchCorrectionService Corrections { get; }
 
     public ValueTask InitializeAsync() => InitializeAsync(TimeZoneInfo.Utc.Id);
 

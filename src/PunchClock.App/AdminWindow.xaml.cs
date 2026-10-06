@@ -3,6 +3,8 @@ using System.Windows.Input;
 using PunchClock.Core.Accounts;
 using PunchClock.Core.Audit;
 using PunchClock.Core.Employees;
+using PunchClock.Core.Punches;
+using PunchClock.Core.Site;
 using PunchClock.Core.Security;
 
 namespace PunchClock.App;
@@ -32,6 +34,11 @@ public partial class AdminWindow : Window
             EmployeesTab.IsSelected = true;
         }
 
+        var today = DateTime.Today;
+        CorrectionFrom.SelectedDate = today.AddDays(-13);
+        CorrectionTo.SelectedDate = today;
+        CorrectionDate.SelectedDate = today;
+
         Loaded += async (_, _) => await RunAsync(ReloadAsync);
         Closed += async (_, _) => await SignOutOnceAsync();
     }
@@ -47,7 +54,142 @@ public partial class AdminWindow : Window
             : $"Saved: {zoneId}";
 
         AccountList.ItemsSource = await _services.Accounts.ListAsync();
-        EmployeeList.ItemsSource = await _services.Employees.ListAsync(activeOnly: false);
+        var employees = await _services.Employees.ListAsync(activeOnly: false);
+        EmployeeList.ItemsSource = employees;
+
+        var selectedId = (CorrectionEmployee.SelectedItem as Employee)?.Id;
+        CorrectionEmployee.ItemsSource = employees;
+        CorrectionEmployee.SelectedItem = employees.FirstOrDefault(e => e.Id == selectedId);
+        await ReloadPunchesAsync();
+    }
+
+    private async Task ReloadPunchesAsync()
+    {
+        if (CorrectionEmployee.SelectedItem is not Employee employee
+            || CorrectionFrom.SelectedDate is not { } from || CorrectionTo.SelectedDate is not { } to)
+        {
+            PunchList.ItemsSource = null;
+            return;
+        }
+
+        // The dates are site dates; widen by a day each side so any zone is covered, then trim.
+        var zone = SiteTime.ResolveZone(await _services.Site.GetTimeZoneIdAsync(), TimeZoneInfo.Local);
+        var rows = await _services.Corrections.ListAsync(
+            employee.Id, new DateTimeOffset(from.Date.AddDays(-1), TimeSpan.Zero), new DateTimeOffset(to.Date.AddDays(2), TimeSpan.Zero));
+        PunchList.ItemsSource = rows
+            .Where(r =>
+            {
+                var date = TimeZoneInfo.ConvertTime(r.Punch.OccurredAtUtc, zone).Date;
+                return date >= from.Date && date <= to.Date;
+            })
+            .ToList();
+    }
+
+    private async void CorrectionFilter_Changed(object sender, RoutedEventArgs e)
+    {
+        if (IsLoaded)
+        {
+            await RunAsync(ReloadPunchesAsync);
+        }
+    }
+
+    private async void ShowPunches_Click(object sender, RoutedEventArgs e) => await RunAsync(ReloadPunchesAsync);
+
+    private void PunchList_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        // Pre-fill the editor with the selected punch, ready to change.
+        if (PunchList.SelectedItem is PunchReviewRow { Punch: var punch })
+        {
+            CorrectionDirection.SelectedIndex = punch.Direction == PunchDirection.In ? 0 : 1;
+            CorrectionDate.SelectedDate = punch.OccurredAtLocal.Date;
+            CorrectionTime.Text = punch.OccurredAtLocal.ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+        }
+    }
+
+    private async void AddPunch_Click(object sender, RoutedEventArgs e)
+    {
+        if (CorrectionEmployee.SelectedItem is not Employee employee)
+        {
+            Show("Select an employee first.", isError: true);
+            return;
+        }
+
+        if (ReadCorrectionTime() is not { } local)
+        {
+            return;
+        }
+
+        var (direction, reason) = (SelectedDirection, CorrectionReason.Text);
+        await CorrectAsync(() => _services.Corrections.AddAsync(_admin, employee.Id, direction, local, reason));
+    }
+
+    private async void AdjustPunch_Click(object sender, RoutedEventArgs e)
+    {
+        if (PunchList.SelectedItem is not PunchReviewRow row)
+        {
+            Show("Select a punch first.", isError: true);
+            return;
+        }
+
+        if (ReadCorrectionTime() is not { } local)
+        {
+            return;
+        }
+
+        var (direction, reason) = (SelectedDirection, CorrectionReason.Text);
+        await CorrectAsync(() => _services.Corrections.AdjustAsync(_admin, row.Punch.Id, direction, local, reason));
+    }
+
+    private async void VoidPunch_Click(object sender, RoutedEventArgs e)
+    {
+        if (PunchList.SelectedItem is not PunchReviewRow row)
+        {
+            Show("Select a punch first.", isError: true);
+            return;
+        }
+
+        var reason = CorrectionReason.Text;
+        await CorrectAsync(() => _services.Corrections.VoidAsync(_admin, row.Punch.Id, reason));
+    }
+
+    private PunchDirection SelectedDirection => CorrectionDirection.SelectedIndex == 1 ? PunchDirection.Out : PunchDirection.In;
+
+    private DateTime? ReadCorrectionTime()
+    {
+        if (CorrectionDate.SelectedDate is not { } date
+            || !TimeOnly.TryParse(CorrectionTime.Text, System.Globalization.CultureInfo.CurrentCulture, out var time))
+        {
+            Show("Enter a date and a time such as 17:30.", isError: true);
+            return null;
+        }
+
+        return date.Date + time.ToTimeSpan();
+    }
+
+    private async Task CorrectAsync(Func<Task<CorrectionResult>> correct)
+    {
+        await RunAsync(async () =>
+        {
+            var result = await correct();
+            if (result == CorrectionResult.Corrected)
+            {
+                CorrectionReason.Clear();
+            }
+
+            await ReloadPunchesAsync();
+            Show(result switch
+            {
+                CorrectionResult.Corrected => "Correction saved.",
+                CorrectionResult.ReasonTooShort => $"Enter a reason of at least {PunchCorrectionService.MinReasonLength} characters.",
+                CorrectionResult.OwnPunches => "Your account is linked to this employee; another manager must correct these punches.",
+                CorrectionResult.InFuture => "That time is in the future.",
+                CorrectionResult.InvalidLocalTime => "That time does not exist on that date (daylight-saving change). Pick another time.",
+                CorrectionResult.SiteTimeZoneNotSet => "An admin must set the site time zone first.",
+                CorrectionResult.PunchNotFound => "That punch has already been corrected. Refresh and select the current one.",
+                CorrectionResult.NotAllowed => "Only managers and admins can correct punches.",
+                _ => "That employee no longer exists.",
+            }, isError: result != CorrectionResult.Corrected);
+        });
     }
 
     private async void SaveTimeZone_Click(object sender, RoutedEventArgs e)
