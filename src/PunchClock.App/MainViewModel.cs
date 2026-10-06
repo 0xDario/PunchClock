@@ -54,9 +54,18 @@ public sealed partial class MainViewModel(
         }
 
         Employees.Clear();
-        foreach (var employee in await employees.ListActiveAsync())
+        var active = await employees.ListActiveAsync();
+
+        // New employees cannot share an active name, but imported ones might: label those so
+        // two identical entries are never offered.
+        var shared = active.GroupBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1).Select(g => g.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var employee in active)
         {
-            Employees.Add(new EmployeeOption(employee.Id, employee.DisplayName));
+            var label = shared.Contains(employee.DisplayName)
+                ? $"{employee.DisplayName} (#{employee.LegacyId ?? employee.Id})"
+                : employee.DisplayName;
+            Employees.Add(new EmployeeOption(employee.Id, label));
         }
     }
 
