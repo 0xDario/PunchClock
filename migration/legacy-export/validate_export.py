@@ -22,6 +22,7 @@ import datetime as dt
 import decimal
 import hashlib
 import json
+import math
 import pathlib
 import shutil
 import sys
@@ -195,7 +196,9 @@ def check_table(ex, t, rep):
     if not path.exists():
         rep.fail(f"{name}: {t['file']} missing")
         return
-    if t.get("sha256") and sha256(path) != t["sha256"]:
+    if not t.get("sha256"):
+        rep.fail(f"{name}: manifest declares no CSV hash")
+    elif sha256(path) != t["sha256"]:
         rep.fail(f"{name}: CSV hash differs from manifest")
     raw = path.read_bytes()
     if raw.startswith(b"\xef\xbb\xbf"):
@@ -221,6 +224,7 @@ def check_table(ex, t, rep):
     if len(body) != t["row_count"]:
         rep.fail(f"{name}: {len(body)} rows in CSV, manifest says {t['row_count']}")
 
+    categories = {c["name"]: c.get("category") for c in t.get("column_types") or []}
     pk = t.get("primary_key")
     if isinstance(pk, str) and pk in header:
         k = header.index(pk)
@@ -230,10 +234,15 @@ def check_table(ex, t, rep):
             return
         if len(set(keys)) != len(keys):
             rep.fail(f"{name}: duplicate {pk} values")
+        # The declared column type decides; Jackcess manifests carry no types, and their keys are AutoNumbers.
+        category = categories.get(pk)
         try:
-            ids = [int(x) for x in keys]
+            ids = [int(x) for x in keys] if category in (None, "integer") else None
         except ValueError:
-            ids = None  # text or GUID key: Access collation decides the order, so only uniqueness is checked
+            ids = None
+        if category == "integer" and ids is None:
+            rep.fail(f"{name}: non-integer value in integer key {pk}")
+        # ids is None for text or GUID keys: Access collation decides their order, so only uniqueness is checked.
         if ids is not None:
             if ids != sorted(ids):
                 rep.fail(f"{name}: rows not ordered by {pk}")
@@ -250,8 +259,12 @@ def check_table(ex, t, rep):
         for r in body:
             if (r[ki] is None) != (r[ko] is None):
                 bad += 1
-            elif r[ki] is not None and fmt_iso(oadate_to_datetime(float(r[ko]))) != r[ki]:
-                bad += 1
+            elif r[ki] is not None:
+                try:
+                    if fmt_iso(oadate_to_datetime(float(r[ko]))) != r[ki]:
+                        bad += 1
+                except (ValueError, OverflowError):  # not a number, or outside the datetime range
+                    bad += 1
         if bad:
             rep.fail(f"{name}.{c[:-7]}: {bad} values disagree with {c}")
 
@@ -265,9 +278,18 @@ def check_table(ex, t, rep):
             if len(vals) != ct["non_null"]:
                 rep.fail(f"{name}.{col}: {len(vals)} non-NULL values, Access counted {ct['non_null']}")
             if "sum" in ct:
-                got = sum((decimal.Decimal(v) for v in vals), decimal.Decimal(0))
-                want = decimal.Decimal(ct["sum"]) if ct["sum"] is not None else decimal.Decimal(0)
-                if got != want:
+                try:
+                    got = sum((decimal.Decimal(v) for v in vals), decimal.Decimal(0))
+                    want = decimal.Decimal(ct["sum"]) if ct["sum"] is not None else decimal.Decimal(0)
+                except decimal.InvalidOperation:
+                    rep.fail(f"{name}.{col}: non-numeric value in a summed column")
+                    continue
+                if categories.get(col) == "float":
+                    # Access sums doubles in its own order; allow for rounding.
+                    ok = math.isclose(float(got), float(want), rel_tol=1e-9, abs_tol=1e-9)
+                else:
+                    ok = got == want
+                if not ok:
                     rep.fail(f"{name}.{col}: sum {got} != Access SUM {want}")
             for agg, fn in (("min", min), ("max", max)):
                 if agg in ct and (fn(vals) if vals else None) != ct[agg]:

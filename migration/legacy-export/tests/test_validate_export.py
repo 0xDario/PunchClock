@@ -171,11 +171,63 @@ class ValidateExportTest(unittest.TestCase):
         (self.root / "Lookup.csv").write_bytes(b"Code,Label\r\nB,Bee\r\nA,Ay\r\n")
         m = json.loads((self.root / "manifest.json").read_text())
         m["tables"].append({"name": "Lookup", "file": "Lookup.csv", "row_count": 2, "primary_key": "Code",
-                            "min_id": None, "max_id": None, "columns": ["Code", "Label"]})
+                            "min_id": None, "max_id": None, "columns": ["Code", "Label"],
+                            "sha256": hashlib.sha256((self.root / "Lookup.csv").read_bytes()).hexdigest()})
         (self.root / "manifest.json").write_text(json.dumps(m))
         (self.root / "SHA256SUMS.txt").unlink()
         rc, out = run(self.root)
         self.assertEqual(rc, 0, out)
+
+    def test_digit_text_key_uses_declared_type(self):
+        (self.root / "Codes.csv").write_bytes(b"Code,Label\r\n2,Two\r\n1,One\r\n")
+        m = json.loads((self.root / "manifest.json").read_text())
+        m["tables"].append({"name": "Codes", "file": "Codes.csv", "row_count": 2, "primary_key": "Code",
+                            "min_id": None, "max_id": None, "columns": ["Code", "Label"],
+                            "sha256": hashlib.sha256((self.root / "Codes.csv").read_bytes()).hexdigest(),
+                            "column_types": [{"name": "Code", "category": "text"}, {"name": "Label", "category": "text"}]})
+        (self.root / "manifest.json").write_text(json.dumps(m))
+        (self.root / "SHA256SUMS.txt").unlink()
+        rc, out = run(self.root)
+        self.assertEqual(rc, 0, out)
+
+    def test_missing_csv_hash_fails(self):
+        m = json.loads((self.root / "manifest.json").read_text())
+        del m["tables"][0]["sha256"]
+        (self.root / "manifest.json").write_text(json.dumps(m))
+        rc, out = run(self.root)
+        self.assertEqual(rc, 1)
+        self.assertIn("Employee: manifest declares no CSV hash", out)
+
+    def test_malformed_oadate_reports_instead_of_crashing(self):
+        p = self.root / "Shift.csv"
+        lines = p.read_bytes().split(b"\r\n")
+        f = lines[1].split(b",")
+        f[3] = b"garbage"
+        lines[1] = b",".join(f)
+        p.write_bytes(b"\r\n".join(lines))
+        rc, out = run(self.root)
+        self.assertEqual(rc, 1)
+        self.assertIn("Shift.TimeIn: 1 values disagree with TimeIn_OADate", out)
+        self.assertNotIn("Traceback", out)
+
+    def test_float_sum_tolerates_rounding(self):
+        (self.root / "Rates.csv").write_bytes(b"ID,Rate\r\n1,0.1\r\n2,0.2\r\n")
+        m = json.loads((self.root / "manifest.json").read_text())
+        m["tables"].append({"name": "Rates", "file": "Rates.csv", "row_count": 2, "primary_key": "ID",
+                            "min_id": 1, "max_id": 2, "columns": ["ID", "Rate"],
+                            "sha256": hashlib.sha256((self.root / "Rates.csv").read_bytes()).hexdigest(),
+                            "column_types": [{"name": "ID", "category": "integer"}, {"name": "Rate", "category": "float"}],
+                            "control_totals": {"ID": {"non_null": 2, "sum": "3"},
+                                               "Rate": {"non_null": 2, "sum": "0.30000000000000004"}}})
+        (self.root / "manifest.json").write_text(json.dumps(m))
+        (self.root / "SHA256SUMS.txt").unlink()
+        rc, out = run(self.root)
+        self.assertEqual(rc, 0, out)
+        m["tables"][-1]["control_totals"]["Rate"]["sum"] = "0.4"
+        (self.root / "manifest.json").write_text(json.dumps(m))
+        rc, out = run(self.root)
+        self.assertEqual(rc, 1)
+        self.assertIn("Rates.Rate: sum", out)
 
     def test_unknown_time_zone_is_reported_not_raised(self):
         rc, out = run(self.root, "--site-tz", "Nowhere/Atlantis")
