@@ -103,7 +103,7 @@ public static class ImportReport
         sb.AppendLine();
 
         sb.AppendLine($"Needs review after import ({review.Count})");
-        sb.AppendLine("No legacy value was changed. Fix these in the new app, where every correction is logged.");
+        sb.AppendLine("No legacy value was changed. Fix these on the Corrections tab in the new app, where every correction is logged.");
         AppendFindings(sb, review);
         sb.AppendLine();
         sb.AppendLine($"For information ({info.Count})");
