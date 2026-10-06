@@ -41,7 +41,8 @@ public partial class MainWindow : Window
             var change = new ChangePinWindow(_services.Employees, employee.Id, pin) { Owner = this };
             if (change.ShowDialog() == true && change.ChosenPin is { } newPin)
             {
-                await _viewModel.PunchAsync(direction, newPin);
+                // The employee whose PIN just changed, not whoever is selected now.
+                await _viewModel.PunchAsync(direction, newPin, employee);
             }
         }
     }

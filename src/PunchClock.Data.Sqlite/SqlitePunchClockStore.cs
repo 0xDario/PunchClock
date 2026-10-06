@@ -106,14 +106,35 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
     public async Task<long> AddEmployeeAsync(NewEmployee employee, CancellationToken ct = default)
     {
         await using var command = Command("""
-            INSERT INTO employee (first_name, last_name, pin_hash)
-            VALUES ($first, $last, $pin)
+            INSERT INTO employee (first_name, last_name, pin_hash, pin_must_change)
+            VALUES ($first, $last, $pin, $must)
             RETURNING id;
             """);
         command.Parameters.AddWithValue("$first", employee.FirstName);
         command.Parameters.AddWithValue("$last", employee.LastName);
         command.Parameters.AddWithValue("$pin", employee.PinHash);
+        command.Parameters.AddWithValue("$must", employee.PinMustChange ? 1 : 0);
         return (long)(await command.ExecuteScalarAsync(ct))!;
+    }
+
+    public async Task<int> CountRecentPinFailuresAsync(long employeeId, TimeSpan window, CancellationToken ct = default)
+    {
+        // Failures inside the window that nothing has cleared since: a later action by the
+        // employee (a punch, a PIN change) or a change to their row (a manager's PIN reset).
+        // The window runs on the database clock, like every audit timestamp.
+        await using var command = Command("""
+            SELECT count(*) FROM audit_log f
+             WHERE f.action = 'AUTH_PIN_FAILED' AND f.actor_kind = 'employee' AND f.actor_id = $id
+               AND f.occurred_utc > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', $window)
+               AND NOT EXISTS (
+                   SELECT 1 FROM audit_log s
+                    WHERE s.seq > f.seq
+                      AND ((s.actor_kind = 'employee' AND s.actor_id = $id AND s.action <> 'AUTH_PIN_FAILED')
+                           OR (s.table_name = 'employee' AND s.row_id = $id)));
+            """);
+        command.Parameters.AddWithValue("$id", employeeId);
+        command.Parameters.AddWithValue("$window", FormattableString.Invariant($"-{(long)window.TotalSeconds} seconds"));
+        return Convert.ToInt32(await command.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture);
     }
 
     public async Task SetPinHashAsync(long employeeId, string pinHash, bool mustChange, CancellationToken ct = default)

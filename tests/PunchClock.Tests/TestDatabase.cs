@@ -96,7 +96,7 @@ public sealed class TestDatabase : IAsyncLifetime
     }
 
     public Task<long> AddEmployeeAsync(string pin = "1234", string first = "Ada", string last = "Lovelace") =>
-        Employees.CreateAsync(AuditActor.System, first, last, pin);
+        Employees.CreateAsync(AuditActor.System, first, last, pin, pinMustChange: false);
 
     public async Task<AppUser> AddAdminAsync(string username = "owner", string password = "correct horse battery")
     {
