@@ -22,7 +22,7 @@ public static class PinPolicy
     /// <summary>
     /// Whether <paramref name="pin"/> is the employee's current PIN. An imported employee who has
     /// not yet replaced their PIN also matches with leading zeros removed: Access stored 0123 as
-    /// 123, so the imported hash is of "123" while the employee still types "0123". One check, one
+    /// 123 (and 000 as 0), so the imported hash is of "123" while the employee still types "0123". One check, one
     /// failure: only if both forms fail is it a wrong PIN.
     /// </summary>
     public static bool Matches(IPinHasher hasher, Employees.Employee employee, string pin)
@@ -34,8 +34,7 @@ public static class PinPolicy
 
         return employee is { LegacyId: not null, PinMustChange: true }
             && pin.Length > 1 && pin[0] == '0'
-            && pin.TrimStart('0') is { Length: > 0 } stripped
-            && hasher.Verify(stripped, employee.PinHash);
+            && hasher.Verify(pin.TrimStart('0') is { Length: > 0 } stripped ? stripped : "0", employee.PinHash);
     }
 
     /// <returns>null when valid, otherwise a user-facing reason.</returns>
