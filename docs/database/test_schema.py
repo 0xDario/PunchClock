@@ -277,6 +277,11 @@ def main():
     s.blocked("employee cannot change another PIN", "UPDATE employee SET pin_hash = 'h' WHERE id = ?", (ana,), "not authorized")
     check("PIN hash never enters the log",
           s.one("SELECT count(*) FROM audit_log WHERE after_json LIKE '%pbkdf2%' OR before_json LIKE '%pbkdf2%'")[0] == 0)
+    s.act("user", mgr).x("INSERT INTO employee (first_name, last_name, pin_hash) VALUES ('Zoe', 'Former', 'pbkdf2-sha256$z')")
+    zoe = s.one("SELECT max(id) FROM employee")[0]
+    s.x("UPDATE employee SET is_active = 0 WHERE id = ?", (zoe,))
+    s.act("employee", zoe).blocked("deactivated employee cannot change own PIN",
+                                   "UPDATE employee SET pin_hash = 'pbkdf2-sha256$z2' WHERE id = ?", (zoe,), "not authorized")
     s.act("user", admin).blocked("DELETE employee rejected", "DELETE FROM employee WHERE id = ?", (ben,), "cannot be deleted")
 
     # --- Audit log protection ----------------------------------------------------------
@@ -581,6 +586,13 @@ def main():
           ("punch", phantom) in rules
           and len([r for r in p["verify_rules_v"] if r[1] == phantom]) == 2)
     check("admission bypass: admin self-correction flagged", ("punch_correction", self_fix) in rules)
+
+    t = tampered("inactive_pin")
+    t.x("DROP TRIGGER employee_bu")
+    t.act("employee", zoe).x("UPDATE employee SET pin_hash = 'pbkdf2-sha256$z3' WHERE id = ?", (zoe,))
+    t.act("user", admin).x(s_trigger("employee_bu"))
+    check("deactivated employee's PIN change with the rule dropped: flagged",
+          ("employee", zoe) in {(r[0], r[1]) for r in t.problems()["verify_rules_v"]})
 
     t = tampered("import_gaps")
     t.act("user", 2)

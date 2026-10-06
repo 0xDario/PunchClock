@@ -488,7 +488,7 @@ CREATE TRIGGER employee_bu BEFORE UPDATE ON employee BEGIN
    WHERE NEW.id IS NOT OLD.id OR NEW.legacy_id IS NOT OLD.legacy_id OR NEW.created_utc IS NOT OLD.created_utc;
   SELECT RAISE(ABORT, 'employee: not authorized')
    WHERE NOT EXISTS (SELECT 1 FROM ctx_user_v WHERE role IN ('system', 'admin', 'manager'))
-     AND NOT (pc_ctx('actor_kind') = 'employee' AND pc_ctx('actor_id') = OLD.id
+     AND NOT (pc_ctx('actor_kind') = 'employee' AND pc_ctx('actor_id') = OLD.id AND OLD.is_active = 1
               AND NEW.first_name IS OLD.first_name AND NEW.last_name IS OLD.last_name
               AND NEW.is_active IS OLD.is_active AND NEW.pin_must_change = 0
               AND NEW.pin_hash IS NOT OLD.pin_hash);
@@ -1022,6 +1022,17 @@ SELECT 'employee', a.row_id, 'imported employee created without a forced PIN res
  WHERE a.table_name = 'employee' AND a.action = 'INSERT'
    AND json_extract(a.after_json, '$.legacy_id') IS NOT NULL
    AND json_extract(a.after_json, '$.pin_must_change') IS NOT 1
+UNION ALL
+SELECT 'employee', a.row_id, 'employee self-service change other than an active employee''s own new PIN'
+  FROM audit_log a
+ WHERE a.table_name = 'employee' AND a.action = 'UPDATE' AND a.actor_kind = 'employee'
+   AND NOT (a.actor_id = a.row_id
+            AND json_extract(a.before_json, '$.is_active') = 1
+            AND json_extract(a.after_json, '$.is_active') = 1
+            AND json_extract(a.after_json, '$.first_name') IS json_extract(a.before_json, '$.first_name')
+            AND json_extract(a.after_json, '$.last_name') IS json_extract(a.before_json, '$.last_name')
+            AND json_extract(a.after_json, '$.pin_must_change') = 0
+            AND json_extract(a.after_json, '$.pin_hash_digest') IS NOT json_extract(a.before_json, '$.pin_hash_digest'))
 UNION ALL
 SELECT 'import_batch', b.id, 'closed batch has unreconciled raw rows'
   FROM import_batch b
