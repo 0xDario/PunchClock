@@ -12,27 +12,26 @@ public sealed class PunchCorrectionServiceTests : DatabaseTest
 
     private static TimeZoneInfo Zone => TimeZoneInfo.FindSystemTimeZoneById(Toronto);
 
-    private DateTime LocalNow(TimeSpan ago) => TimeZoneInfo.ConvertTime(Db.Clock.GetUtcNow() - ago, Zone).DateTime;
+    private static DateTime LocalNow(TimeSpan ago) => TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow - ago, Zone).DateTime;
 
     [Fact]
     public async Task Manager_adds_a_forgotten_punch_out_with_a_reason()
     {
         var manager = await Db.AddManagerAsync();
         var id = await Db.AddEmployeeAsync();
-        await Db.Punches.PunchAsync(id, "1234", PunchDirection.In);
-        Db.Clock.Advance(TimeSpan.FromSeconds(10));
-        var outAt = LocalNow(TimeSpan.Zero);
+        await Db.Corrections.AddAsync(manager, id, PunchDirection.In, LocalNow(TimeSpan.FromHours(8)), "Punch-in written on paper");
+        var outAt = LocalNow(TimeSpan.FromMinutes(1));
 
         Assert.Equal(CorrectionResult.Corrected,
             await Db.Corrections.AddAsync(manager, id, PunchDirection.Out, outAt, "Forgot to punch out at end of shift"));
 
         Assert.Equal(ClockStatus.Out, await Db.Employees.GetStatusAsync(id));
         var added = (await Db.Corrections.ListAsync(id, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1)))
-            .Single(r => r.Punch.Source == PunchSource.Correction).Punch;
+            .Single(r => r.Punch.Direction == PunchDirection.Out).Punch;
         Assert.Equal(outAt.AddTicks(-(outAt.Ticks % TimeSpan.TicksPerMillisecond)), added.OccurredAtLocal.DateTime);
         Assert.Equal((int)Zone.GetUtcOffset(added.OccurredAtUtc).TotalMinutes, added.UtcOffsetMinutes);
         Assert.Equal("Forgot to punch out at end of shift", await Db.ScalarAsync<string>(
-            "SELECT reason FROM audit_log WHERE table_name = 'punch_correction' AND actor_id = $by;", ("$by", manager.Id)));
+            "SELECT reason FROM audit_log WHERE table_name = 'punch_correction' AND actor_id = $by ORDER BY seq DESC LIMIT 1;", ("$by", manager.Id)));
         Assert.Empty(await Db.VerifyAsync());
     }
 

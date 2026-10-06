@@ -51,6 +51,14 @@ public interface IPunchClockUnitOfWork : IAsyncDisposable
 
     Task SetEmployeeActiveAsync(long employeeId, bool isActive, CancellationToken ct = default);
 
+    /// <summary>
+    /// The database clock, to the millisecond: the clock the schema stamps <c>recorded_utc</c> and
+    /// audit times with. Kiosk punch times come from here, not the .NET clock: on Windows SQLite reads
+    /// a coarser system clock than <see cref="DateTimeOffset.UtcNow"/>, so an app-side "now" can be a few
+    /// milliseconds ahead of the database's and the schema refuses it as a future punch.
+    /// </summary>
+    Task<DateTimeOffset> GetDatabaseUtcNowAsync(CancellationToken ct = default);
+
     /// <summary>Latest effective (not superseded) punch by time, ties broken by insertion order.</summary>
     Task<Punch?> FindLatestPunchAsync(long employeeId, CancellationToken ct = default);
 
