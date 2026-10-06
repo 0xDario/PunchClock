@@ -2,10 +2,13 @@
 --
 -- Design doc: docs/database/schema-design.md
 --
--- Two application-defined functions must be registered on EVERY connection before
+-- Three application-defined functions must be registered on EVERY connection before
 -- any write. A connection without them can read every table but cannot write,
 -- because every write fires a trigger that calls them.
 --   pc_sha256(text) -> lowercase hex SHA-256 of the UTF-8 bytes; NULL -> NULL
+--   pc_utc_offset(zone_id, utc) -> INTEGER minutes east of UTC for that Windows time
+--                      zone id at that UTC instant (TimeZoneInfo.GetUtcOffset);
+--                      NULL if the zone id is unknown or either argument is NULL
 --   pc_ctx(name)    -> the connection's audit context:
 --                        'actor_kind' TEXT  'employee' | 'user'
 --                        'actor_id'   INTEGER employee.id or app_user.id
@@ -221,6 +224,8 @@ CREATE TRIGGER audit_log_bi BEFORE INSERT ON audit_log BEGIN
    WHERE NEW.prev_hash IS NOT NULL OR NEW.row_hash IS NOT NULL;
   SELECT RAISE(ABORT, 'audit_log: actor does not match the connection context')
    WHERE NEW.actor_kind IS NOT pc_ctx('actor_kind') OR NEW.actor_id IS NOT pc_ctx('actor_id');
+  SELECT RAISE(ABORT, 'audit_log: client does not match the connection context')
+   WHERE NEW.client IS NOT pc_ctx('client');
   SELECT RAISE(ABORT, 'audit_log: occurred_utc is the database clock, not caller-supplied')
    WHERE NEW.occurred_utc IS NOT strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
   -- Table events must be exactly what the table's own trigger would write, so a caller
@@ -375,6 +380,22 @@ UNION ALL SELECT 'punch',               id, j FROM punch_snapshot_v
 UNION ALL SELECT 'punch_correction',    id, j FROM punch_correction_snapshot_v
 UNION ALL SELECT 'audit_checkpoint',    id, j FROM audit_checkpoint_snapshot_v;
 
+-- What each raw legacy shift may become: an IN at its TimeIn and an OUT at its TimeOut,
+-- in local wall time. A shift recorded as DST_INVALID may instead be one hour later
+-- (moved out of the spring-forward gap); the importer records that issue first.
+CREATE VIEW legacy_punch_source_v AS
+SELECT d.import_batch_id, d.legacy_shift_id, d.legacy_employee_id, d.direction, d.wall_local,
+       CASE WHEN EXISTS (SELECT 1 FROM migration_issue i
+                          WHERE i.import_batch_id = d.import_batch_id AND i.legacy_table = 'Shift'
+                            AND i.legacy_pk = d.legacy_shift_id AND i.code = 'DST_INVALID')
+            THEN strftime('%Y-%m-%dT%H:%M:%f', d.wall_local, '+60 minutes') END AS wall_local_dst_shifted
+  FROM (SELECT import_batch_id, legacy_shift_id, legacy_employee_id, 'IN' AS direction, time_in_local AS wall_local
+          FROM legacy_shift_raw
+        UNION ALL
+        SELECT import_batch_id, legacy_shift_id, legacy_employee_id, 'OUT', time_out_local
+          FROM legacy_shift_raw) d
+ WHERE d.wall_local IS NOT NULL;
+
 -- The connection's actor when it is an active app_user; empty otherwise.
 CREATE VIEW ctx_user_v AS
 SELECT u.* FROM app_user u
@@ -400,6 +421,9 @@ CREATE TRIGGER site_setting_bu BEFORE UPDATE ON site_setting BEGIN
    WHERE NOT EXISTS (SELECT 1 FROM ctx_user_v WHERE role IN ('system', 'admin'));
   SELECT RAISE(ABORT, 'site_setting: id and key are immutable')
    WHERE NEW.id IS NOT OLD.id OR NEW.key IS NOT OLD.key;
+  SELECT RAISE(ABORT, 'site_setting: time_zone_id must be a known Windows time zone id')
+   WHERE NEW.key = 'time_zone_id'
+     AND pc_utc_offset(NEW.value, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) IS NULL;
 END;
 CREATE TRIGGER site_setting_au AFTER UPDATE ON site_setting BEGIN
   INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json, reason)
@@ -473,6 +497,10 @@ CREATE TRIGGER app_user_bu BEFORE UPDATE ON app_user BEGIN
   SELECT RAISE(ABORT, 'app_user: id, created_utc and service-account roles are immutable')
    WHERE NEW.id IS NOT OLD.id OR NEW.created_utc IS NOT OLD.created_utc
       OR ((OLD.role IN ('system', 'migration') OR NEW.role IN ('system', 'migration')) AND NEW.role IS NOT OLD.role);
+  SELECT RAISE(ABORT, 'app_user: the last active admin cannot be deactivated or demoted')
+   WHERE OLD.role = 'admin' AND OLD.is_active = 1
+     AND (NEW.role IS NOT 'admin' OR NEW.is_active IS NOT 1)
+     AND NOT EXISTS (SELECT 1 FROM app_user WHERE role = 'admin' AND is_active = 1 AND id <> OLD.id);
   SELECT RAISE(ABORT, 'app_user: an account cannot change its own employee link')
    WHERE pc_ctx('actor_kind') = 'user' AND pc_ctx('actor_id') = OLD.id
      AND NEW.employee_id IS NOT OLD.employee_id;
@@ -610,9 +638,20 @@ CREATE TRIGGER punch_bi BEFORE INSERT ON punch BEGIN
   SELECT RAISE(ABORT, 'punch: employee is inactive')
    WHERE NEW.source = 'kiosk'
      AND NOT EXISTS (SELECT 1 FROM employee WHERE id = NEW.employee_id AND is_active = 1);
+  SELECT RAISE(ABORT, 'punch: occurred_utc is in the future')
+   WHERE NEW.occurred_utc > NEW.recorded_utc;
   SELECT RAISE(ABORT, 'punch: kiosk time must be the current time')
    WHERE NEW.source = 'kiosk'
-     AND abs(julianday(NEW.occurred_utc) - julianday('now')) * 86400 > 120;
+     AND (julianday(NEW.recorded_utc) - julianday(NEW.occurred_utc)) * 86400 > 120;
+  SELECT RAISE(ABORT, 'punch: site time zone is not configured')
+   WHERE NEW.source IN ('kiosk', 'correction')
+     AND (SELECT value FROM site_setting WHERE key = 'time_zone_id') IS 'UNSET';
+  SELECT RAISE(ABORT, 'punch: utc_offset_minutes does not match the time zone at that instant')
+   WHERE NEW.utc_offset_minutes IS NOT pc_utc_offset(
+           CASE WHEN NEW.source = 'legacy_import'
+                THEN (SELECT source_time_zone_id FROM import_batch WHERE id = NEW.import_batch_id)
+                ELSE (SELECT value FROM site_setting WHERE key = 'time_zone_id') END,
+           NEW.occurred_utc);
   SELECT RAISE(ABORT, 'punch: correction punch does not match its correction')
    WHERE NEW.source = 'correction'
      AND NOT EXISTS (SELECT 1 FROM punch_correction c
@@ -624,6 +663,14 @@ CREATE TRIGGER punch_bi BEFORE INSERT ON punch BEGIN
    WHERE NEW.source = 'legacy_import'
      AND (NOT EXISTS (SELECT 1 FROM ctx_user_v WHERE role = 'migration')
           OR NOT EXISTS (SELECT 1 FROM import_batch WHERE id = NEW.import_batch_id AND completed_utc IS NULL));
+  SELECT RAISE(ABORT, 'punch: legacy_import punch does not match its raw legacy shift')
+   WHERE NEW.source = 'legacy_import'
+     AND NOT EXISTS (SELECT 1 FROM legacy_punch_source_v v
+                      WHERE v.import_batch_id = NEW.import_batch_id AND v.legacy_shift_id = NEW.legacy_shift_id
+                        AND v.direction = NEW.direction
+                        AND v.legacy_employee_id = (SELECT legacy_id FROM employee WHERE id = NEW.employee_id)
+                        AND strftime('%Y-%m-%dT%H:%M:%f', NEW.occurred_utc, NEW.utc_offset_minutes || ' minutes')
+                            IN (v.wall_local, v.wall_local_dst_shifted));
 END;
 CREATE TRIGGER punch_ai AFTER INSERT ON punch BEGIN
   INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json, reason)
@@ -678,6 +725,8 @@ CREATE TRIGGER audit_checkpoint_bi BEFORE INSERT ON audit_checkpoint BEGIN
    WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE seq = NEW.audit_seq AND row_hash = NEW.audit_hash);
   SELECT RAISE(ABORT, 'audit_checkpoint: must anchor the current chain head')
    WHERE NEW.audit_seq IS NOT (SELECT max(seq) FROM audit_log);
+  SELECT RAISE(ABORT, 'audit_checkpoint: schema_fingerprint must be the current schema')
+   WHERE NEW.schema_fingerprint IS NOT (SELECT fingerprint FROM schema_fingerprint_v);
 END;
 CREATE TRIGGER audit_checkpoint_ai AFTER INSERT ON audit_checkpoint BEGIN
   INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json, reason)
@@ -839,6 +888,100 @@ SELECT NULL, 'import_batch', b.id, 'closed batch does not reconcile with its man
  WHERE b.completed_utc IS NOT NULL
    AND ((SELECT count(*) FROM legacy_employee_raw WHERE import_batch_id = b.id) <> b.manifest_employee_rows
      OR (SELECT count(*) FROM legacy_shift_raw WHERE import_batch_id = b.id) <> b.manifest_shift_rows);
+
+-- Admission rules for payroll records, re-derived from the stored rows and their INSERT
+-- events. A BEFORE trigger can be dropped for one statement and recreated identically,
+-- which the fingerprint cannot see; the data it let in still breaks these rules. Actor
+-- state, the site zone and batch state are read as of the event, from the log itself.
+CREATE VIEW verify_rules_v AS
+WITH pe AS (
+  SELECT p.*, a.seq AS event_seq, a.actor_kind, a.actor_id,
+         (SELECT json_extract(h.after_json, '$.value') FROM audit_log h
+           WHERE h.table_name = 'site_setting' AND h.action IN ('INSERT', 'UPDATE') AND h.seq < a.seq
+             AND json_extract(h.after_json, '$.key') = 'time_zone_id'
+           ORDER BY h.seq DESC LIMIT 1) AS site_zone_then,
+         (SELECT h.after_json FROM audit_log h
+           WHERE h.table_name = 'employee' AND h.row_id = p.employee_id
+             AND h.action IN ('INSERT', 'UPDATE') AND h.seq < a.seq
+           ORDER BY h.seq DESC LIMIT 1) AS employee_then,
+         (SELECT h.after_json FROM audit_log h
+           WHERE a.actor_kind = 'user' AND h.table_name = 'app_user' AND h.row_id = a.actor_id
+             AND h.action IN ('INSERT', 'UPDATE') AND h.seq < a.seq
+           ORDER BY h.seq DESC LIMIT 1) AS actor_then
+    FROM punch p
+    JOIN audit_log a ON a.table_name = 'punch' AND a.row_id = p.id AND a.action = 'INSERT'
+),
+ce AS (
+  SELECT c.*, a.seq AS event_seq, a.actor_kind, a.actor_id,
+         (SELECT h.after_json FROM audit_log h
+           WHERE a.actor_kind = 'user' AND h.table_name = 'app_user' AND h.row_id = a.actor_id
+             AND h.action IN ('INSERT', 'UPDATE') AND h.seq < a.seq
+           ORDER BY h.seq DESC LIMIT 1) AS actor_then
+    FROM punch_correction c
+    JOIN audit_log a ON a.table_name = 'punch_correction' AND a.row_id = c.id AND a.action = 'INSERT'
+)
+SELECT 'punch' AS table_name, id AS row_id, 'kiosk punch not made by the punching employee' AS problem
+  FROM pe WHERE source = 'kiosk' AND NOT (actor_kind = 'employee' AND actor_id = employee_id)
+UNION ALL
+SELECT 'punch', id, 'kiosk punch by an inactive employee'
+  FROM pe WHERE source = 'kiosk' AND json_extract(employee_then, '$.is_active') IS NOT 1
+UNION ALL
+SELECT 'punch', id, 'kiosk time is not the time it was recorded'
+  FROM pe WHERE source = 'kiosk' AND (julianday(recorded_utc) - julianday(occurred_utc)) * 86400 > 120
+UNION ALL
+SELECT 'punch', id, 'punch time is later than when it was recorded'
+  FROM pe WHERE occurred_utc > recorded_utc
+UNION ALL
+SELECT 'punch', id, 'offset does not match the time zone in effect'
+  FROM pe
+ WHERE utc_offset_minutes IS NOT pc_utc_offset(
+         CASE WHEN source = 'legacy_import'
+              THEN (SELECT source_time_zone_id FROM import_batch WHERE id = pe.import_batch_id)
+              ELSE site_zone_then END,
+         occurred_utc)
+UNION ALL
+SELECT 'punch', id, 'correction punch does not match its correction'
+  FROM pe
+ WHERE source = 'correction'
+   AND NOT EXISTS (SELECT 1 FROM punch_correction c
+                    WHERE c.id = pe.correction_id AND c.action <> 'void'
+                      AND c.employee_id = pe.employee_id AND c.new_direction = pe.direction
+                      AND c.new_occurred_utc = pe.occurred_utc
+                      AND c.new_utc_offset_minutes = pe.utc_offset_minutes)
+UNION ALL
+SELECT 'punch', id, 'import punch not made by the active migration account into an open batch'
+  FROM pe
+ WHERE source = 'legacy_import'
+   AND (json_extract(actor_then, '$.role') IS NOT 'migration' OR json_extract(actor_then, '$.is_active') IS NOT 1
+        OR EXISTS (SELECT 1 FROM audit_log h
+                    WHERE h.table_name = 'import_batch' AND h.row_id = pe.import_batch_id
+                      AND h.action = 'UPDATE' AND h.seq < pe.event_seq))
+UNION ALL
+SELECT 'punch', id, 'import punch does not match its raw legacy shift'
+  FROM pe
+ WHERE source = 'legacy_import'
+   AND NOT EXISTS (SELECT 1 FROM legacy_punch_source_v v
+                    WHERE v.import_batch_id = pe.import_batch_id AND v.legacy_shift_id = pe.legacy_shift_id
+                      AND v.direction = pe.direction
+                      AND v.legacy_employee_id = json_extract(pe.employee_then, '$.legacy_id')
+                      AND strftime('%Y-%m-%dT%H:%M:%f', pe.occurred_utc, pe.utc_offset_minutes || ' minutes')
+                          IN (v.wall_local, v.wall_local_dst_shifted))
+UNION ALL
+SELECT 'punch_correction', id, 'correction actor is not the user who made it'
+  FROM ce WHERE NOT (actor_kind = 'user' AND actor_id = actor_user_id)
+UNION ALL
+SELECT 'punch_correction', id, 'correction by an account that was not an active manager or admin'
+  FROM ce
+ WHERE json_extract(actor_then, '$.role') NOT IN ('admin', 'manager') IS NOT 0
+    OR json_extract(actor_then, '$.is_active') IS NOT 1
+UNION ALL
+SELECT 'punch_correction', id, 'correction of the actor''s own punches'
+  FROM ce WHERE json_extract(actor_then, '$.employee_id') = employee_id
+UNION ALL
+SELECT 'punch_correction', id, 'correction target belongs to another employee'
+  FROM ce
+ WHERE target_punch_id IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM punch WHERE id = ce.target_punch_id AND employee_id = ce.employee_id);
 
 -- Warning, not proof: the wall clock moved back more than 60 s between audit rows.
 CREATE VIEW verify_clock_v AS

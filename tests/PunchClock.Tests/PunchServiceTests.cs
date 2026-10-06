@@ -95,10 +95,13 @@ public sealed class PunchServiceTests : DatabaseTest
         // The service trusts the app clock; the schema re-checks it against the database clock.
         var id = await Db.AddEmployeeAsync();
         Db.Clock.Advance(TimeSpan.FromHours(3));
+        var ahead = await Assert.ThrowsAsync<SqliteException>(() => Db.Punches.PunchAsync(id, "1234", PunchDirection.In));
 
-        var ex = await Assert.ThrowsAsync<SqliteException>(() => Db.Punches.PunchAsync(id, "1234", PunchDirection.In));
+        Db.Clock.Advance(TimeSpan.FromHours(-6));
+        var behind = await Assert.ThrowsAsync<SqliteException>(() => Db.Punches.PunchAsync(id, "1234", PunchDirection.In));
 
-        Assert.Contains("current time", ex.Message);
+        Assert.Contains("in the future", ahead.Message);
+        Assert.Contains("current time", behind.Message);
         Assert.Equal(0, await CountPunchesAsync(id));
     }
 
@@ -153,15 +156,16 @@ public sealed class PunchServiceTests : DatabaseTest
     }
 
     [Fact]
-    public async Task Unset_site_zone_falls_back_to_the_machine_zone()
+    public async Task Database_rejects_an_offset_that_does_not_match_the_site_zone()
     {
-        var zone = TimeZoneInfo.CreateCustomTimeZone("Test+0530", TimeSpan.FromMinutes(330), "Test", "Test");
-        var punches = new PunchService(Db.Store, TestDatabase.FastHasher, new ManualTimeProvider(DateTimeOffset.UtcNow, zone));
         var id = await Db.AddEmployeeAsync();
 
-        var punch = (await punches.PunchAsync(id, "1234", PunchDirection.In)).Punch!;
+        var ex = await Assert.ThrowsAsync<SqliteException>(() => Db.ExecuteAsync(AuditActor.ForEmployee(id), """
+            INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source)
+            VALUES ($id, 'IN', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 330, 'kiosk');
+            """, ("$id", id)));
 
-        Assert.Equal(330, punch.UtcOffsetMinutes);
+        Assert.Contains("utc_offset_minutes", ex.Message);
     }
 
     [Fact]

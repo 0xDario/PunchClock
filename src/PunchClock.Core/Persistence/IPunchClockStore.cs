@@ -50,6 +50,15 @@ public interface IPunchClockUnitOfWork : IAsyncDisposable
 
     Task<Punch> AppendKioskPunchAsync(long employeeId, PunchDirection direction, DateTimeOffset occurredAtUtc, int utcOffsetMinutes, CancellationToken ct = default);
 
+    /// <summary>The punch if it exists and no correction has superseded it.</summary>
+    Task<Punch?> FindEffectivePunchAsync(long punchId, CancellationToken ct = default);
+
+    /// <summary>Effective punches with <paramref name="fromUtc"/> &lt;= time &lt; <paramref name="toUtc"/>, oldest first.</summary>
+    Task<IReadOnlyList<Punch>> ListEffectivePunchesAsync(long employeeId, DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default);
+
+    /// <summary>The schema's review queue (<c>punch_exception_v</c>) for one employee: punch id and kind.</summary>
+    Task<IReadOnlyList<(long PunchId, string Kind)>> ListPunchExceptionsAsync(long employeeId, CancellationToken ct = default);
+
     Task<long> AddCorrectionAsync(NewCorrection correction, CancellationToken ct = default);
 
     Task<AppUser?> FindUserAsync(long userId, CancellationToken ct = default);
