@@ -46,6 +46,8 @@ Requires the .NET 10 SDK. On Windows: `dotnet run --project src/PunchClock.App`.
 
 One-time switchover of a PC running the old app (v1.x, Access database) to v2. Do it when nobody needs to punch, and do every step on that PC. Nothing below changes or deletes the old database: until someone punches in the new app, going back means simply starting the old app again.
 
+**Before you switch:** v2 does not have a pay-period hours report or a data export yet, and the old app cannot read v2's punches. Wait for a release whose notes list them, unless you can run payroll another way until then.
+
 **You need** the v2 installer, `PunchClock-Setup-<version>.exe`, from [Releases](https://github.com/0xDario/PunchClock/releases), and a USB stick for the backup.
 
 1. **Stop the old app.** Pick a time when nobody is on shift, close PunchClock, and check Task Manager that `PunchClock.exe` is gone.
