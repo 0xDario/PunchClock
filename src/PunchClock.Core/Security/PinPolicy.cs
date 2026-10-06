@@ -10,6 +10,15 @@ public static class PinPolicy
     public const int MinLength = 3;
     public const int MaxLength = 6;
 
+    /// <summary>
+    /// Wrong PINs allowed per employee within <see cref="LockoutWindow"/>; after that the employee
+    /// cannot punch or change their PIN until the window passes or a manager resets the PIN.
+    /// A 3-digit PIN has only 1,000 values, so the kiosk must not be an unlimited guessing oracle.
+    /// </summary>
+    public const int MaxFailedAttempts = 5;
+
+    public static readonly TimeSpan LockoutWindow = TimeSpan.FromMinutes(15);
+
     /// <returns>null when valid, otherwise a user-facing reason.</returns>
     public static string? Validate(string? pin)
     {

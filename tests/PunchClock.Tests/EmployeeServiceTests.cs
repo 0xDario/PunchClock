@@ -3,6 +3,7 @@ using PunchClock.Core.Accounts;
 using PunchClock.Core.Audit;
 using PunchClock.Core.Employees;
 using PunchClock.Core.Punches;
+using PunchClock.Core.Security;
 
 namespace PunchClock.Tests;
 
@@ -127,5 +128,67 @@ public sealed class EmployeeServiceTests : DatabaseTest
         Assert.Equal(PinResetResult.PinRejected, await Db.Employees.ResetPinAsync(manager, id, "12", "Forgot PIN"));
         Assert.Equal(PinResetResult.EmployeeNotFound, await Db.Employees.ResetPinAsync(manager, 999, "9999", "Forgot PIN"));
         Assert.True((await Db.Punches.PunchAsync(id, "1234", PunchDirection.In)).Accepted);
+    }
+
+    [Fact]
+    public async Task Starting_pin_typed_in_by_a_manager_must_be_replaced_before_the_first_punch()
+    {
+        var manager = await Db.AddManagerAsync();
+        var id = await Db.Employees.CreateAsync(AuditActor.ForUser(manager.Id), "New", "Hire", "4321");
+
+        Assert.Equal(PunchRejection.PinChangeRequired, (await Db.Punches.PunchAsync(id, "4321", PunchDirection.In)).Rejection);
+        Assert.Equal(PinChangeResult.Changed, await Db.Employees.ChangeOwnPinAsync(id, "4321", "8765"));
+        Assert.True((await Db.Punches.PunchAsync(id, "8765", PunchDirection.In)).Accepted);
+    }
+
+    [Fact]
+    public async Task Repeated_wrong_pins_lock_the_employee_out_until_a_manager_resets()
+    {
+        var id = await Db.AddEmployeeAsync("1234");
+        var manager = await Db.AddManagerAsync();
+        for (var i = 0; i < PinPolicy.MaxFailedAttempts; i++)
+        {
+            Assert.Equal(PunchRejection.InvalidPin, (await Db.Punches.PunchAsync(id, $"9{i:D2}", PunchDirection.In)).Rejection);
+        }
+
+        // Locked: even the right PIN is not checked, and PIN changes are refused too.
+        Assert.Equal(PunchRejection.TooManyAttempts, (await Db.Punches.PunchAsync(id, "1234", PunchDirection.In)).Rejection);
+        Assert.Equal(PinChangeResult.TooManyAttempts, await Db.Employees.ChangeOwnPinAsync(id, "1234", "5678"));
+        Assert.Equal(0, await Db.ScalarAsync<long>("SELECT count(*) FROM punch WHERE employee_id = $id;", ("$id", id)));
+        Assert.Equal(PinPolicy.MaxFailedAttempts, await Db.ScalarAsync<long>(
+            "SELECT count(*) FROM audit_log WHERE action = 'AUTH_PIN_FAILED' AND actor_id = $id;", ("$id", id)));
+
+        Assert.Equal(PinResetResult.Reset, await Db.Employees.ResetPinAsync(manager, id, "7777", "Locked out"));
+        Assert.Equal(PunchRejection.PinChangeRequired, (await Db.Punches.PunchAsync(id, "7777", PunchDirection.In)).Rejection);
+    }
+
+    [Fact]
+    public async Task A_successful_punch_clears_earlier_wrong_pins()
+    {
+        var id = await Db.AddEmployeeAsync("1234");
+        for (var round = 0; round < 2; round++)
+        {
+            for (var i = 0; i < PinPolicy.MaxFailedAttempts - 1; i++)
+            {
+                await Db.Punches.PunchAsync(id, "999", PunchDirection.In);
+            }
+
+            var direction = round == 0 ? PunchDirection.In : PunchDirection.Out;
+            Assert.True((await Db.Punches.PunchAsync(id, "1234", direction)).Accepted);
+            Db.Clock.Advance(TimeSpan.FromSeconds(1));
+        }
+    }
+
+    [Fact]
+    public async Task Lockout_is_per_employee()
+    {
+        var target = await Db.AddEmployeeAsync("1234");
+        var other = await Db.AddEmployeeAsync("5678", "Grace", "Hopper");
+        for (var i = 0; i < PinPolicy.MaxFailedAttempts; i++)
+        {
+            await Db.Punches.PunchAsync(target, "999", PunchDirection.In);
+        }
+
+        Assert.True((await Db.Punches.PunchAsync(other, "5678", PunchDirection.In)).Accepted);
     }
 }

@@ -3,6 +3,7 @@ using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using PunchClock.Core.Employees;
 using PunchClock.Core.Punches;
+using PunchClock.Core.Security;
 using PunchClock.Core.Site;
 
 namespace PunchClock.App;
@@ -58,10 +59,12 @@ public sealed partial class MainViewModel(
         Date = now.ToString("D", CultureInfo.CurrentCulture);
     }
 
+    /// <param name="employee">Who is punching; the current selection when null.</param>
     /// <returns>The outcome, or null when nothing was attempted or the attempt failed.</returns>
-    public async Task<PunchResult?> PunchAsync(PunchDirection direction, string pin)
+    public async Task<PunchResult?> PunchAsync(PunchDirection direction, string pin, EmployeeOption? employee = null)
     {
-        if (SelectedEmployee is not { } employee)
+        employee ??= SelectedEmployee;
+        if (employee is null)
         {
             return null;
         }
@@ -104,6 +107,7 @@ public sealed partial class MainViewModel(
         {
             null => $"{employee.DisplayName} punched {(direction == PunchDirection.In ? "in" : "out")} at {result.Punch!.OccurredAtLocal.ToString("t", CultureInfo.CurrentCulture)}.",
             PunchRejection.InvalidPin => "Incorrect PIN. Nothing was recorded.",
+            PunchRejection.TooManyAttempts => $"Too many incorrect PINs. Try again in {PinPolicy.LockoutWindow.TotalMinutes:0} minutes or ask a manager to reset your PIN. Nothing was recorded.",
             PunchRejection.PinChangeRequired => "Your PIN must be replaced before you can punch. Nothing was recorded.",
             PunchRejection.AlreadyPunchedIn => $"You are already punched in since {lastAt}. If you forgot to punch out, punch out now and ask a manager to correct the time.",
             PunchRejection.NotPunchedIn => "You are not punched in, so there is nothing to punch out of. Ask a manager if a punch-in is missing.",

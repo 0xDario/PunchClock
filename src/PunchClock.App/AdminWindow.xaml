@@ -80,7 +80,7 @@
                                          PreviewTextInput="Pin_PreviewTextInput" DataObject.Pasting="Pin_Pasting" />
                             <Button Grid.Column="3" Content="Add" Click="AddEmployee_Click" Padding="12,4" />
                         </Grid>
-                        <TextBlock Foreground="Gray" Text="First name, last name, starting PIN." Margin="0,4,0,0" />
+                        <TextBlock Foreground="Gray" Text="First name, last name, starting PIN. The employee must replace the starting PIN before their first punch is recorded." TextWrapping="Wrap" Margin="0,4,0,0" />
                     </StackPanel>
                     <ListView x:Name="EmployeeList">
                         <ListView.View>

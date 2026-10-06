@@ -49,7 +49,9 @@ public partial class ChangePinWindow : Window
                 return;
             }
 
-            Error.Text = "The PIN could not be changed. Ask a manager.";
+            Error.Text = result == PinChangeResult.TooManyAttempts
+                ? $"Too many incorrect PINs. Try again in {PinPolicy.LockoutWindow.TotalMinutes:0} minutes or ask a manager."
+                : "The PIN could not be changed. Ask a manager.";
         }
         catch (Exception ex)
         {
