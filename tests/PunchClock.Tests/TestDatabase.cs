@@ -137,7 +137,7 @@ public sealed class TestDatabase : IAsyncLifetime
     public async Task<IReadOnlyList<string>> VerifyAsync()
     {
         var problems = new List<string>();
-        foreach (var view in new[] { "verify_chain_v", "verify_drift_v", "verify_continuity_v" })
+        foreach (var view in new[] { "verify_chain_v", "verify_drift_v", "verify_continuity_v", "verify_history_v" })
         {
             problems.AddRange((await ColumnAsync($"SELECT problem FROM {view};")).Select(p => $"{view}: {p}"));
         }

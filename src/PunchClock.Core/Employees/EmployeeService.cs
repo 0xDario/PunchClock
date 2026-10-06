@@ -1,3 +1,4 @@
+using PunchClock.Core.Accounts;
 using PunchClock.Core.Audit;
 using PunchClock.Core.Persistence;
 using PunchClock.Core.Punches;
@@ -11,6 +12,16 @@ public enum PinChangeResult
     EmployeeNotFound,
     InvalidCurrentPin,
     NewPinRejected,
+}
+
+public enum PinResetResult
+{
+    Reset,
+    EmployeeNotFound,
+
+    /// <summary>Only managers and admins reset PINs, and only with a reason.</summary>
+    NotAllowed,
+    PinRejected,
 }
 
 public sealed class EmployeeService(IPunchClockStore store, IPinHasher pinHasher)
@@ -57,10 +68,13 @@ public sealed class EmployeeService(IPunchClockStore store, IPinHasher pinHasher
         await uow.CommitAsync(ct);
     }
 
-    /// <summary>An employee replaces their own PIN; also clears a forced PIN change.</summary>
+    /// <summary>
+    /// An employee replaces their own PIN; also clears a forced PIN change. The new PIN must differ,
+    /// so a temporary or legacy PIN someone else knows cannot simply be kept.
+    /// </summary>
     public async Task<PinChangeResult> ChangeOwnPinAsync(long employeeId, string currentPin, string newPin, CancellationToken ct = default)
     {
-        if (PinPolicy.Validate(newPin) is not null)
+        if (PinPolicy.Validate(newPin) is not null || newPin == currentPin)
         {
             return PinChangeResult.NewPinRejected;
         }
@@ -80,8 +94,39 @@ public sealed class EmployeeService(IPunchClockStore store, IPinHasher pinHasher
             return PinChangeResult.InvalidCurrentPin;
         }
 
-        await uow.SetPinHashAsync(employeeId, pinHasher.Hash(newPin), ct);
+        await uow.SetPinHashAsync(employeeId, pinHasher.Hash(newPin), mustChange: false, ct);
         await uow.CommitAsync(ct);
         return PinChangeResult.Changed;
+    }
+
+    /// <summary>
+    /// A manager or admin gives an employee who forgot their PIN a temporary one. The manager knows
+    /// it, so the employee must replace it before their next punch is recorded; the reset is
+    /// audited under the manager's account with <paramref name="reason"/>.
+    /// </summary>
+    public async Task<PinResetResult> ResetPinAsync(
+        AppUser by, long employeeId, string temporaryPin, string reason, CancellationToken ct = default)
+    {
+        if (by.Role is not (UserRole.Admin or UserRole.Manager) || string.IsNullOrWhiteSpace(reason))
+        {
+            return PinResetResult.NotAllowed;
+        }
+
+        if (PinPolicy.Validate(temporaryPin) is not null)
+        {
+            return PinResetResult.PinRejected;
+        }
+
+        await using var uow = await store.BeginAsync(ct);
+        var employee = await uow.FindEmployeeAsync(employeeId, ct);
+        if (employee is null || !employee.IsActive)
+        {
+            return PinResetResult.EmployeeNotFound;
+        }
+
+        uow.ActAs(AuditActor.ForUser(by.Id), reason.Trim());
+        await uow.SetPinHashAsync(employeeId, pinHasher.Hash(temporaryPin), mustChange: true, ct);
+        await uow.CommitAsync(ct);
+        return PinResetResult.Reset;
     }
 }

@@ -20,6 +20,9 @@ public partial class ChangePinWindow : Window
         Loaded += (_, _) => NewPin.Focus();
     }
 
+    /// <summary>The PIN now in effect, once the dialog returns true.</summary>
+    public string? ChosenPin { get; private set; }
+
     private async void Save_Click(object sender, RoutedEventArgs e)
     {
         var newPin = NewPin.Password;
@@ -41,6 +44,7 @@ public partial class ChangePinWindow : Window
             var result = await Task.Run(() => _employees.ChangeOwnPinAsync(_employeeId, _currentPin, newPin));
             if (result == PinChangeResult.Changed)
             {
+                ChosenPin = newPin;
                 DialogResult = true;
                 return;
             }

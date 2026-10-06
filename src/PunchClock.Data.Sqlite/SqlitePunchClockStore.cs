@@ -18,6 +18,10 @@ public sealed class SqlitePunchClockStore(SqliteDatabase database) : IPunchClock
             // BEGIN IMMEDIATE: take the write lock up front so a read-check-insert sequence
             // cannot interleave with another writer. Contention waits up to DefaultTimeout.
             var transaction = connection.BeginTransaction(deferred: false);
+
+            // Startup checked the schema once; a kiosk runs for months, so every unit of work
+            // checks again under the write lock before trusting the triggers to guard its writes.
+            await SchemaMigrator.EnsureSchemaIntactAsync(connection, transaction, ct);
             return new SqliteUnitOfWork(connection, transaction, context);
         }
         catch
@@ -112,10 +116,11 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
         return (long)(await command.ExecuteScalarAsync(ct))!;
     }
 
-    public async Task SetPinHashAsync(long employeeId, string pinHash, CancellationToken ct = default)
+    public async Task SetPinHashAsync(long employeeId, string pinHash, bool mustChange, CancellationToken ct = default)
     {
-        await using var command = Command("UPDATE employee SET pin_hash = $pin, pin_must_change = 0 WHERE id = $id;");
+        await using var command = Command("UPDATE employee SET pin_hash = $pin, pin_must_change = $must WHERE id = $id;");
         command.Parameters.AddWithValue("$pin", pinHash);
+        command.Parameters.AddWithValue("$must", mustChange ? 1 : 0);
         command.Parameters.AddWithValue("$id", employeeId);
         await ExpectOneRowAsync(command, $"Employee {employeeId}", ct);
     }

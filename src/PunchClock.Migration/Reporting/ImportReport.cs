@@ -73,7 +73,7 @@ public static class ImportReport
             {
                 foreach (var (id, pin) in outcome.TemporaryPins)
                     sb.AppendLine($"  Employee {id.ToString(Inv),-8}{Clip(Name(plan, id), 27),-28}PIN {pin}");
-                sb.AppendLine("  Give each PIN to its employee only. The app asks them for a new PIN after their first punch.");
+                sb.AppendLine("  Give each PIN to its employee only. They must choose a new PIN before their first punch is recorded.");
             }
             else
             {

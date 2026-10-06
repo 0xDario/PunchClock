@@ -48,21 +48,7 @@ public sealed class SqliteDatabase
         try
         {
             await connection.OpenAsync(ct);
-
-            connection.CreateFunction("pc_sha256", (string? text) => Sha256Hex(text), isDeterministic: true);
-            connection.CreateFunction("pc_ctx", (string name) => context.Get(name));
-
-            await using var pragma = connection.CreateCommand();
-            // trusted_schema = ON: the schema's triggers and views call the two functions above;
-            //   with it off SQLite refuses them ("unsafe use of pc_sha256()") and every write fails.
-            // synchronous = FULL: a committed punch survives power loss.
-            pragma.CommandText = """
-                PRAGMA foreign_keys = ON;
-                PRAGMA synchronous = FULL;
-                PRAGMA busy_timeout = 5000;
-                PRAGMA trusted_schema = ON;
-                """;
-            await pragma.ExecuteNonQueryAsync(ct);
+            await ConfigureAsync(connection, context, ct);
             return connection;
         }
         catch
@@ -70,6 +56,25 @@ public sealed class SqliteDatabase
             await connection.DisposeAsync();
             throw;
         }
+    }
+
+    /// <summary>Registers the schema's functions and sets the pragmas it relies on.</summary>
+    internal static async Task ConfigureAsync(SqliteConnection connection, AuditContext context, CancellationToken ct)
+    {
+        connection.CreateFunction("pc_sha256", (string? text) => Sha256Hex(text), isDeterministic: true);
+        connection.CreateFunction("pc_ctx", (string name) => context.Get(name));
+
+        await using var pragma = connection.CreateCommand();
+        // trusted_schema = ON: the schema's triggers and views call the two functions above;
+        //   with it off SQLite refuses them ("unsafe use of pc_sha256()") and every write fails.
+        // synchronous = FULL: a committed punch survives power loss.
+        pragma.CommandText = """
+            PRAGMA foreign_keys = ON;
+            PRAGMA synchronous = FULL;
+            PRAGMA busy_timeout = 5000;
+            PRAGMA trusted_schema = ON;
+            """;
+        await pragma.ExecuteNonQueryAsync(ct);
     }
 
     internal static string? Sha256Hex(string? text) =>

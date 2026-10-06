@@ -3,12 +3,14 @@ using System.Windows.Input;
 using PunchClock.Core.Accounts;
 using PunchClock.Core.Audit;
 using PunchClock.Core.Employees;
+using PunchClock.Core.Security;
 
 namespace PunchClock.App;
 
 /// <summary>
-/// Site administration for a signed-in admin. Every change is attributed to that admin by the
-/// database's audit triggers; this window only collects input.
+/// Site administration for a signed-in admin, or staff management for a signed-in manager.
+/// Every change is attributed to that account by the database's audit triggers, which also
+/// enforce the role rules; this window only collects input.
 /// </summary>
 public partial class AdminWindow : Window
 {
@@ -23,6 +25,12 @@ public partial class AdminWindow : Window
         _admin = admin;
         SignedInAs.Text = $"Signed in as {admin.DisplayName} ({admin.Username})";
         TimeZoneBox.ItemsSource = TimeZoneInfo.GetSystemTimeZones();
+        if (admin.Role != UserRole.Admin)
+        {
+            // Managers look after staff; site settings and accounts are admin-only in the database.
+            SiteTab.Visibility = AccountsTab.Visibility = Visibility.Collapsed;
+            EmployeesTab.IsSelected = true;
+        }
 
         Loaded += async (_, _) => await RunAsync(ReloadAsync);
         Closed += async (_, _) => await SignOutOnceAsync();
@@ -100,6 +108,34 @@ public partial class AdminWindow : Window
             await _services.Employees.SetActiveAsync(Actor, target.Id, isActive);
             await ReloadAsync();
             Show($"{target.DisplayName} is now {(isActive ? "active" : "inactive")}.");
+        });
+    }
+
+    private async void ResetPin_Click(object sender, RoutedEventArgs e)
+    {
+        if (EmployeeList.SelectedItem is not Employee target)
+        {
+            Show("Select an employee first.", isError: true);
+            return;
+        }
+
+        var (pin, reason) = (TemporaryPin.Password, PinResetReason.Text);
+        await RunAsync(async () =>
+        {
+            var result = await Task.Run(() => _services.Employees.ResetPinAsync(_admin, target.Id, pin, reason));
+            if (result == PinResetResult.Reset)
+            {
+                TemporaryPin.Clear();
+            }
+
+            await ReloadAsync();
+            Show(result switch
+            {
+                PinResetResult.Reset => $"{target.DisplayName}'s PIN was reset. They must choose a new one at their next punch.",
+                PinResetResult.PinRejected => PinPolicy.Validate(pin) ?? "That PIN is not allowed.",
+                PinResetResult.NotAllowed => "Enter a reason for the reset.",
+                _ => "That employee no longer exists or is inactive.",
+            }, isError: result != PinResetResult.Reset);
         });
     }
 

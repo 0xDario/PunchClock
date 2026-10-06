@@ -102,7 +102,7 @@ internal static class Program
         Console.WriteLine($"Audit log head: seq {outcome.ChainSeq}, {outcome.ChainHash}");
         if (outcome.TemporaryPins.Count > 0)
         {
-            Console.WriteLine("Temporary PINs for employees who had none in the old app (they choose a new one after their first punch):");
+            Console.WriteLine("Temporary PINs for employees who had none in the old app (they must choose a new one before their first punch is recorded):");
             foreach (var (id, pin) in outcome.TemporaryPins)
                 Console.WriteLine($"  Employee {id}: {pin}");
         }

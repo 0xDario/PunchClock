@@ -11,7 +11,7 @@
         <TextBlock x:Name="Status" DockPanel.Dock="Bottom" TextWrapping="Wrap" Margin="0,12,0,0" />
 
         <TabControl>
-            <TabItem Header="_Site">
+            <TabItem x:Name="SiteTab" Header="_Site">
                 <StackPanel Margin="16">
                     <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
                                Text="Punches store UTC plus this zone's offset at the moment of the punch. Changing the zone affects new punches only." />
@@ -22,7 +22,7 @@
                 </StackPanel>
             </TabItem>
 
-            <TabItem Header="_Accounts">
+            <TabItem x:Name="AccountsTab" Header="_Accounts">
                 <DockPanel Margin="16">
                     <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
                         <Label Content="_Reason (kept in the audit log)" Target="{Binding ElementName=AccountReason}" Padding="0,0,0,4" />
@@ -45,13 +45,27 @@
                 </DockPanel>
             </TabItem>
 
-            <TabItem Header="_Employees">
+            <TabItem x:Name="EmployeesTab" Header="_Employees">
                 <DockPanel Margin="16">
                     <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                             <Button Content="_Deactivate" Click="DeactivateEmployee_Click" Padding="12,4" Margin="0,0,8,0" />
                             <Button Content="Re_activate" Click="ActivateEmployee_Click" Padding="12,4" />
                         </StackPanel>
+                        <TextBlock Text="Reset a forgotten PIN" FontWeight="SemiBold" Margin="0,8,0,4" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="110" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <PasswordBox x:Name="TemporaryPin" Grid.Column="0" MaxLength="6" Padding="6" Margin="0,0,8,0" ToolTip="Temporary PIN (3-6 digits)"
+                                         PreviewTextInput="Pin_PreviewTextInput" DataObject.Pasting="Pin_Pasting" />
+                            <TextBox x:Name="PinResetReason" Grid.Column="1" Padding="6" Margin="0,0,8,0" Text="Forgot PIN" ToolTip="Reason (kept in the audit log)" />
+                            <Button Grid.Column="2" Content="Reset P_IN" Click="ResetPin_Click" Padding="12,4" />
+                        </Grid>
+                        <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,4,0,0"
+                                   Text="Temporary PIN, reason. The employee must choose a new PIN before their next punch is recorded." />
                         <TextBlock Text="Add employee" FontWeight="SemiBold" Margin="0,8,0,4" />
                         <Grid>
                             <Grid.ColumnDefinitions>

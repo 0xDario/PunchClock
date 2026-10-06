@@ -11,6 +11,12 @@ public enum PunchRejection
     EmployeeInactive,
     InvalidPin,
 
+    /// <summary>
+    /// The PIN was right but must be replaced first (imported employees: legacy PINs were stored
+    /// in plain text). Nothing is recorded until the employee has chosen a new PIN.
+    /// </summary>
+    PinChangeRequired,
+
     /// <summary>Asked to punch in while already punched in (often a forgotten punch-out).</summary>
     AlreadyPunchedIn,
 
@@ -24,8 +30,7 @@ public enum PunchRejection
 /// <param name="Punch">The recorded punch, when accepted.</param>
 /// <param name="Rejection">Why nothing was recorded, when rejected.</param>
 /// <param name="LastPunch">The employee's latest punch before this attempt, for user-facing context.</param>
-/// <param name="PinMustChange">The PIN was right but must be replaced (imported employees).</param>
-public sealed record PunchResult(Punch? Punch, PunchRejection? Rejection, Punch? LastPunch, bool PinMustChange = false)
+public sealed record PunchResult(Punch? Punch, PunchRejection? Rejection, Punch? LastPunch)
 {
     public bool Accepted => Punch is not null;
 
@@ -67,6 +72,11 @@ public sealed class PunchService(IPunchClockStore store, IPinHasher pinHasher, T
             return PunchResult.Reject(PunchRejection.InvalidPin);
         }
 
+        if (employee.PinMustChange)
+        {
+            return PunchResult.Reject(PunchRejection.PinChangeRequired);
+        }
+
         var last = await uow.FindLatestPunchAsync(employeeId, ct);
         var status = ClockState.From(last);
 
@@ -91,6 +101,6 @@ public sealed class PunchService(IPunchClockStore store, IPinHasher pinHasher, T
         var punch = await uow.AppendKioskPunchAsync(employeeId, direction, now, offset, ct);
 
         await uow.CommitAsync(ct);
-        return new PunchResult(punch, null, last, employee.PinMustChange);
+        return new PunchResult(punch, null, last);
     }
 }
