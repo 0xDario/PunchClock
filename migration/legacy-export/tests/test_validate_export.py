@@ -251,6 +251,17 @@ class ValidateExportTest(unittest.TestCase):
         self.assertIn("Employee: header", out)
         self.assertNotIn("Traceback", out)
 
+    def test_report_hours_follow_access_datediff(self):
+        t = v.parse_iso
+        self.assertEqual(v.access_minutes(t("2022-01-03T08:00:30.000"), t("2022-01-03T08:10:20.000")), 10)
+        self.assertEqual(v.access_minutes(t("2022-01-03T08:00:59.600"), t("2022-01-03T08:09:00.000")), 8)
+        self.assertEqual(v.access_minutes(t("2022-01-03T08:00:59.400"), t("2022-01-03T08:01:00.000")), 1)
+        self.assertEqual(v.access_minutes(t("2022-01-03T09:00:00.000"), t("2022-01-03T08:58:59.000")), -2)
+        rc, out = run(self.root)
+        self.assertEqual(rc, 0, out)
+        # ShiftID 10 is 8 h 30 min 0.25 s: 510 report minutes, 8.50 exact hours (11 adds 450 minutes)
+        self.assertIn("| 1 | Ann Lee | 2 | 0 | 960 | 16.00 | 16.00 |", out)
+
     def test_csv_parser_null_vs_empty(self):
         self.assertEqual(v.parse_csv('a,,"",""""\r\n"x\r\ny",1\r\n'), [["a", None, "", '"'], ["x\r\ny", "1"]])
         with self.assertRaises(ValueError):

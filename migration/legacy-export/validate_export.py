@@ -108,6 +108,15 @@ def hours(td):
     return td.total_seconds() / 3600
 
 
+def access_minutes(t_in, t_out):
+    """DateDiff("n", t_in, t_out) as Access computes it: both ends rounded to the second, then
+    the minute boundaries crossed are counted, so 08:00:30 to 08:10:20 is 10, not 9.83."""
+    def minute(t):
+        t = (t + dt.timedelta(milliseconds=500)).replace(microsecond=0)
+        return t.replace(second=0)
+    return (minute(t_out) - minute(t_in)) // dt.timedelta(minutes=1)
+
+
 class Export:
     def __init__(self, path):
         path = pathlib.Path(path)
@@ -486,17 +495,23 @@ def quality(ex, site_tz, rep):
                 f"`{ex.manifest.get('site_time_zone', {}).get('id', 'unknown')}`).")
     rep.add()
 
-    rep.add("### Hours per employee (closed shifts, under-1 s shifts excluded)")
+    rep.add("### Hours per employee")
     rep.add()
-    rep.add("| EmployeeID | Name | Shifts | Open | Hours | First TimeIn | Last TimeIn |")
-    rep.add("|---:|---|---:|---:|---:|---|---|")
+    rep.add("`Report min`/`Report h` use the legacy pay report's formula, `Sum(DateDiff(\"n\",[TimeIn],[TimeOut])/60)`, "
+            "over every shift with a TimeOut and no exclusions; apply the report's own date range or employee "
+            "filter before comparing. `Exact h` is elapsed time over closed shifts, under-1 s shifts excluded.")
+    rep.add()
+    rep.add("| EmployeeID | Name | Shifts | Open | Report min | Report h | Exact h | First TimeIn | Last TimeIn |")
+    rep.add("|---:|---|---:|---:|---:|---:|---:|---|---|")
     for emp in sorted(by_emp):
         ss = by_emp[emp]
         r = employees.get(emp)
         nm = f"{col(eh, r, 'FirstName') or ''} {col(eh, r, 'LastName') or ''}".strip() if r else "(orphan)"
         closed = [s for s in ss if s[3] is not None and s[3] > s[2] and not is_near_zero(s)]
         total = sum(hours(s[3] - s[2]) for s in closed)
-        rep.add(f"| {emp} | {nm} | {len(ss)} | {sum(1 for s in ss if s[3] is None)} | {total:.2f} | "
+        report_min = sum(access_minutes(s[2], s[3]) for s in ss if s[3] is not None)
+        rep.add(f"| {emp} | {nm} | {len(ss)} | {sum(1 for s in ss if s[3] is None)} | {report_min} | "
+                f"{report_min / 60:.2f} | {total:.2f} | "
                 f"{fmt_iso(min(s[2] for s in ss))} | {fmt_iso(max(s[2] for s in ss))} |")
     rep.add()
 
