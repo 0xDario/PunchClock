@@ -11,6 +11,9 @@ public enum PunchRejection
     EmployeeInactive,
     InvalidPin,
 
+    /// <summary>Too many wrong PINs recently; the PIN was not checked. See <see cref="PinPolicy.MaxFailedAttempts"/>.</summary>
+    TooManyAttempts,
+
     /// <summary>
     /// The PIN was right but must be replaced first (imported employees: legacy PINs were stored
     /// in plain text). Nothing is recorded until the employee has chosen a new PIN.
@@ -64,6 +67,12 @@ public sealed class PunchService(IPunchClockStore store, IPinHasher pinHasher, T
 
         // Every write from here on is attributed to the employee whose PIN was entered.
         uow.ActAs(AuditActor.ForEmployee(employeeId));
+
+        // Checked before the PIN, so a locked-out guess learns nothing.
+        if (await uow.CountRecentPinFailuresAsync(employeeId, PinPolicy.LockoutWindow, ct) >= PinPolicy.MaxFailedAttempts)
+        {
+            return PunchResult.Reject(PunchRejection.TooManyAttempts);
+        }
 
         if (!pinHasher.Verify(pin, employee.PinHash))
         {
