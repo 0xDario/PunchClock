@@ -22,8 +22,9 @@ public sealed class SchemaMismatchException(string message) : Exception(message)
 /// in order, as the system account, and records each with its checksum in <c>schema_migrations</c>
 /// (excluded from the schema fingerprint, not itself audited) plus a sealed <c>SCHEMA_MIGRATE</c>
 /// audit event carrying that checksum and the resulting schema fingerprint.
-/// Forward-only: an applied script that was later edited, or a database migrated by a newer
-/// build, stops startup with <see cref="SchemaMismatchException"/>.
+/// Forward-only: an applied script that was later edited, a database migrated by a newer
+/// build, or a live schema that no longer matches what the scripts create (a trigger dropped
+/// with a generic SQLite tool, say) stops startup with <see cref="SchemaMismatchException"/>.
 /// </summary>
 public sealed partial class SchemaMigrator
 {
@@ -34,11 +35,23 @@ public sealed partial class SchemaMigrator
     /// </summary>
     public static readonly Version MinimumSqliteVersion = new(3, 44, 0);
 
+    // The schema's own schema_fingerprint_v, inlined: the view is part of the schema being
+    // checked, so a tampered database could redefine it to return the expected value.
+    private const string FingerprintQuery = """
+        SELECT pc_sha256(json_group_array(json_array(type, name, tbl_name, sql) ORDER BY type, name))
+          FROM sqlite_schema
+         WHERE name NOT LIKE 'sqlite_%' AND name <> 'schema_migrations';
+        """;
+
+    private static readonly Lazy<Task<string>> EmbeddedFingerprint = new(() => ComputeFingerprintAsync(LoadEmbedded()));
+
     private readonly SqliteDatabase _database;
+    private readonly Lazy<Task<string>> _expectedFingerprint;
 
     public SchemaMigrator(SqliteDatabase database)
         : this(database, LoadEmbedded())
     {
+        _expectedFingerprint = EmbeddedFingerprint;
     }
 
     internal SchemaMigrator(SqliteDatabase database, IEnumerable<Migration> migrations)
@@ -49,6 +62,8 @@ public sealed partial class SchemaMigrator
         {
             throw new InvalidOperationException($"Duplicate migration version {duplicate.Key}.");
         }
+
+        _expectedFingerprint = new(() => ComputeFingerprintAsync(Migrations));
     }
 
     public IReadOnlyList<Migration> Migrations { get; }
@@ -124,8 +139,56 @@ public sealed partial class SchemaMigrator
             newlyApplied.Add(migration.Version);
         }
 
+        // Checked on every start, not only after a migration: the migration rows above prove
+        // which scripts ran, not that their triggers are still there.
+        EnsureFingerprint(await ReadFingerprintAsync(connection, transaction, ct), await _expectedFingerprint.Value);
+
         await transaction.CommitAsync(ct);
         return newlyApplied;
+    }
+
+    /// <summary>
+    /// Throws <see cref="SchemaMismatchException"/> unless the live schema is exactly what this
+    /// build's migrations create. Cheap (one hash over <c>sqlite_schema</c>); call it inside the
+    /// write transaction so no DDL can land between the check and the writes it protects.
+    /// </summary>
+    public static async Task EnsureSchemaIntactAsync(
+        SqliteConnection connection, SqliteTransaction? transaction, CancellationToken ct = default) =>
+        EnsureFingerprint(await ReadFingerprintAsync(connection, transaction, ct), await EmbeddedFingerprint.Value);
+
+    private static void EnsureFingerprint(string? actual, string expected)
+    {
+        if (!string.Equals(actual, expected, StringComparison.Ordinal))
+        {
+            throw new SchemaMismatchException(
+                "The database schema differs from the one this version of PunchClock creates: a table, trigger, view or index was added, changed or removed outside the application. Nothing was written. Restore the database from a backup or have it examined.");
+        }
+    }
+
+    /// <summary>The fingerprint a database has after exactly <paramref name="migrations"/>, built in memory.</summary>
+    private static async Task<string> ComputeFingerprintAsync(IEnumerable<Migration> migrations)
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await SqliteDatabase.ConfigureAsync(
+            connection, new AuditContext(AuditContext.DefaultClient, AuditActor.System, "schema fingerprint"), default);
+        await using var transaction = connection.BeginTransaction();
+        foreach (var migration in migrations)
+        {
+            await ExecuteAsync(connection, transaction, migration.Sql, default);
+        }
+
+        return await ReadFingerprintAsync(connection, transaction, default)
+            ?? throw new InvalidOperationException("The schema fingerprint could not be computed.");
+    }
+
+    private static async Task<string?> ReadFingerprintAsync(
+        SqliteConnection connection, SqliteTransaction? transaction, CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = FingerprintQuery;
+        return await command.ExecuteScalarAsync(ct) as string;
     }
 
     internal static void EnsureSupportedEngine(string sqliteVersion)

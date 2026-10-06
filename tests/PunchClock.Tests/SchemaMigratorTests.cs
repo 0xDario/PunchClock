@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using PunchClock.Core.Audit;
+using PunchClock.Core.Punches;
 using PunchClock.Data.Sqlite;
 
 namespace PunchClock.Tests;
@@ -58,6 +59,43 @@ public sealed class SchemaMigratorTests : DatabaseTest
         await Db.ExecuteAsync(null, "INSERT INTO schema_migrations VALUES (9999, 'future', 'x', '2030-01-01T00:00:00.000Z');");
 
         await Assert.ThrowsAsync<SchemaMismatchException>(() => new SchemaMigrator(Db.Database).MigrateAsync());
+    }
+
+    [Fact]
+    public async Task Live_schema_matches_the_fingerprint_built_from_the_scripts()
+    {
+        await using var connection = await Db.Database.OpenAsync();
+        await SchemaMigrator.EnsureSchemaIntactAsync(connection, null);
+    }
+
+    [Fact]
+    public async Task Dropped_trigger_stops_startup()
+    {
+        // DDL needs no actor, so a generic SQLite tool can do this; the migration rows still look fine.
+        await Db.ExecuteAsync(null, "DROP TRIGGER punch_bu;");
+
+        await Assert.ThrowsAsync<SchemaMismatchException>(() => new SchemaMigrator(Db.Database).MigrateAsync());
+    }
+
+    [Fact]
+    public async Task Redefining_the_fingerprint_view_does_not_hide_tampering()
+    {
+        var expected = await Db.ScalarAsync<string>("SELECT fingerprint FROM schema_fingerprint_v;");
+        await Db.ExecuteAsync(null, "DROP TRIGGER punch_bd;");
+        await Db.ExecuteAsync(null, "DROP VIEW schema_fingerprint_v;");
+        await Db.ExecuteAsync(null, $"CREATE VIEW schema_fingerprint_v AS SELECT '{expected}' AS fingerprint;");
+
+        await Assert.ThrowsAsync<SchemaMismatchException>(() => new SchemaMigrator(Db.Database).MigrateAsync());
+    }
+
+    [Fact]
+    public async Task Running_app_stops_writing_once_a_trigger_is_dropped()
+    {
+        var id = await Db.AddEmployeeAsync("1234");
+        await Db.ExecuteAsync(null, "DROP TRIGGER punch_bi;");
+
+        await Assert.ThrowsAsync<SchemaMismatchException>(() => Db.Punches.PunchAsync(id, "1234", PunchDirection.In));
+        Assert.Equal(0, await Db.ScalarAsync<long>("SELECT count(*) FROM punch;"));
     }
 
     [Fact]
