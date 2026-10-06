@@ -280,8 +280,8 @@ public static class ImportAnalyzer
     }
 
     const string LeadingZeroAdvice =
-        "If this employee's PIN started with 0, they must type it without the leading zero(s) at their first punch " +
-        "(123 for 0123), then choose a new PIN. Warn them, or reset their PIN on the Employees tab before cutover.";
+        "If this employee's PIN started with 0, the kiosk accepts it typed as before (0123) or without the zero(s) (123) " +
+        "until they choose a new PIN at their first punch.";
 
     static string Fmt(DateTime t) => t.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
 
