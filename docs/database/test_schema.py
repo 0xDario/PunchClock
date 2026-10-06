@@ -15,11 +15,14 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import zoneinfo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCHEMA = open(os.path.join(HERE, "schema.sql"), encoding="utf-8").read()
 GENESIS = "0" * 64
-VERIFY_VIEWS = ("verify_chain_v", "verify_drift_v", "verify_continuity_v", "verify_history_v")
+VERIFY_VIEWS = ("verify_chain_v", "verify_drift_v", "verify_continuity_v", "verify_history_v", "verify_rules_v")
+# Windows zone ids the tests use, mapped to IANA for zoneinfo. .NET resolves the Windows id directly.
+WINDOWS_ZONES = {"Eastern Standard Time": "America/Toronto"}
 
 failures = 0
 
@@ -31,14 +34,26 @@ def check(name, ok, detail=""):
         failures += 1
 
 
-# --- The two application-defined functions, as the app must register them -------------
+# --- The three application-defined functions, as the app must register them -----------
 
 def sha256_hex(text):
     return None if text is None else hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def utc_offset(zone_id, utc):
+    """pc_utc_offset: minutes east of UTC for a Windows zone id at a UTC instant; NULL if unknown."""
+    if zone_id not in WINDOWS_ZONES or utc is None:
+        return None
+    t = dt.datetime.strptime(utc, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=dt.timezone.utc)
+    return int(t.astimezone(zoneinfo.ZoneInfo(WINDOWS_ZONES[zone_id])).utcoffset().total_seconds() // 60)
+
+
+def site_offset(utc):
+    return utc_offset("Eastern Standard Time", utc)
+
+
 class Session:
-    """A connection with pc_sha256 and pc_ctx registered, like the app's connection factory."""
+    """A connection with pc_sha256, pc_ctx and pc_utc_offset registered, like the app's connection factory."""
 
     def __init__(self, path, register=True):
         self.ctx = {}
@@ -46,6 +61,7 @@ class Session:
         if register:
             self.conn.create_function("pc_sha256", 1, sha256_hex, deterministic=True)
             self.conn.create_function("pc_ctx", 1, self._ctx)
+            self.conn.create_function("pc_utc_offset", 2, utc_offset)
         self.conn.execute("PRAGMA foreign_keys = ON")
 
     def _ctx(self, name):
@@ -124,7 +140,9 @@ def main():
     check("bootstrap is audited (2 service accounts + 2 settings)", s.one("SELECT count(*) FROM audit_log")[0] == 4)
     check("verifier clean after bootstrap", s.clean(), s.problems())
 
-    s.act("user", 1).x("UPDATE site_setting SET value = 'Eastern Standard Time' WHERE key = 'time_zone_id'")
+    s.act("user", 1).blocked("unknown time zone id rejected",
+                             "UPDATE site_setting SET value = 'Mars/Olympus_Mons' WHERE key = 'time_zone_id'", (), "known Windows time zone")
+    s.x("UPDATE site_setting SET value = 'Eastern Standard Time' WHERE key = 'time_zone_id'")
     s.x("INSERT INTO app_user (username, display_name, role, password_hash) VALUES ('owner', 'Owner', 'admin', 'pbkdf2-sha256$x')")
     admin = s.one("SELECT id FROM app_user WHERE username = 'owner'")[0]
     s.act("user", admin).x("INSERT INTO app_user (username, display_name, role, password_hash) VALUES ('mgr', 'Manager', 'manager', 'pbkdf2-sha256$y')")
@@ -145,28 +163,35 @@ def main():
                                "UPDATE app_user SET role = 'admin' WHERE id = ?", (mgr,), "not authorized")
     s.act("user", admin).blocked("service-account role is immutable",
                                  "UPDATE app_user SET role = 'admin' WHERE id = 2", (), "immutable")
+    s.blocked("last active admin cannot deactivate self", "UPDATE app_user SET is_active = 0 WHERE id = ?", (admin,), "last active admin")
+    s.blocked("last active admin cannot demote self", "UPDATE app_user SET role = 'manager' WHERE id = ?", (admin,), "last active admin")
+    s.x("INSERT INTO app_user (username, display_name, role, password_hash) VALUES ('admin2', 'Second Admin', 'admin', 'pbkdf2-sha256$z')")
+    admin2 = s.one("SELECT id FROM app_user WHERE username = 'admin2'")[0]
+    s.x("UPDATE app_user SET is_active = 0 WHERE id = ?", (admin2,))
+    check("an admin can be deactivated while another stays active", s.one("SELECT is_active FROM app_user WHERE id = ?", (admin2,))[0] == 0)
 
     # --- Kiosk punches -----------------------------------------------------------------
     t_in = now_utc()
+    OFF = site_offset(t_in)
     s.act("employee", ana).x("INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source)"
-                             " VALUES (?, 'IN', ?, -240, 'kiosk')", (ana, t_in))
+                             f" VALUES (?, 'IN', ?, {OFF}, 'kiosk')", (ana, t_in))
     in_id = s.one("SELECT max(id) FROM punch")[0]
     check("kiosk IN accepted", in_id is not None)
     s.blocked("kiosk punch for someone else rejected",
-              "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'IN', ?, -240, 'kiosk')",
+              f"INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'IN', ?, {OFF}, 'kiosk')",
               (ben, now_utc()), "punching employee")
     s.blocked("backdated kiosk punch rejected",
-              "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'OUT', ?, -240, 'kiosk')",
+              f"INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'OUT', ?, {OFF}, 'kiosk')",
               (ana, now_utc(-3600)), "current time")
     s.blocked("caller-supplied recorded_utc rejected",
-              "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source, recorded_utc) VALUES (?, 'OUT', ?, -240, 'kiosk', '2020-01-01T00:00:00.000Z')",
+              f"INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source, recorded_utc) VALUES (?, 'OUT', ?, {OFF}, 'kiosk', '2020-01-01T00:00:00.000Z')",
               (ana, now_utc()), "database clock")
     s.act("user", mgr).blocked("local (non-UTC) timestamp rejected",
                                "INSERT INTO punch_correction (action, employee_id, new_direction, new_occurred_utc, new_utc_offset_minutes, reason, actor_user_id)"
                                " VALUES ('add', ?, 'OUT', '2026-10-02 09:00:00', -240, 'local time entered by mistake', ?)",
                                (ana, mgr), "CHECK")
     s.act("employee", ana)
-    s.x("INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'OUT', ?, -240, 'kiosk')",
+    s.x(f"INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'OUT', ?, {OFF}, 'kiosk')",
         (ana, now_utc()))
     out_id = s.one("SELECT max(id) FROM punch")[0]
     check("kiosk state from employee_status_v",
@@ -176,53 +201,67 @@ def main():
     s.blocked("DELETE punch rejected", "DELETE FROM punch WHERE id = ?", (in_id,), "immutable")
 
     # --- Manager corrections -----------------------------------------------------------
-    new_out = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    new_in = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    off_in = site_offset(new_in)
     s.act("user", mgr)
     s.x("INSERT INTO punch_correction (action, employee_id, target_punch_id, new_direction, new_occurred_utc,"
-        " new_utc_offset_minutes, reason, actor_user_id) VALUES ('adjust', ?, ?, 'OUT', ?, -240, ?, ?)",
-        (ana, out_id, new_out, "Forgot to punch out; supervisor confirmed 8h shift", mgr))
+        " new_utc_offset_minutes, reason, actor_user_id) VALUES ('adjust', ?, ?, 'IN', ?, ?, ?, ?)",
+        (ana, in_id, new_in, off_in, "Punched in late at the kiosk; supervisor confirmed 8h shift", mgr))
     corr = s.one("SELECT id FROM punch_correction ORDER BY id DESC")[0]
     repl = s.one("SELECT id, occurred_utc, source FROM punch WHERE correction_id = ?", (corr,))
-    check("adjust creates its replacement punch atomically", repl is not None and repl[1] == new_out and repl[2] == "correction")
-    shift = s.one("SELECT duration_sec, status, out_punch_id FROM shift_v WHERE in_punch_id = ?", (in_id,))
-    check("shift_v uses the corrected punch", shift[1] == "closed" and shift[2] == repl[0] and abs(shift[0] - 8 * 3600) < 5, shift)
+    check("adjust creates its replacement punch atomically", repl is not None and repl[1] == new_in and repl[2] == "correction")
+    shift = s.one("SELECT duration_sec, status, out_punch_id FROM shift_v WHERE in_punch_id = ?", (repl[0],))
+    check("shift_v uses the corrected punch", shift[1] == "closed" and shift[2] == out_id and abs(shift[0] - 8 * 3600) < 5, shift)
     aud = s.one("SELECT before_json, after_json, reason, actor_kind, actor_id FROM audit_log"
                 " WHERE table_name = 'punch_correction' AND row_id = ?", (corr,))
     check("correction audit row has before (target punch), after, reason and actor",
-          f'"id":{out_id}' in aud[0] and new_out in aud[1] and aud[2].startswith("Forgot") and aud[3:] == ("user", mgr))
+          f'"id":{in_id}' in aud[0] and new_in in aud[1] and aud[2].startswith("Punched") and aud[3:] == ("user", mgr))
     check("replacement punch audit row carries the correction reason",
-          s.one("SELECT reason FROM audit_log WHERE table_name = 'punch' AND row_id = ?", (repl[0],))[0].startswith("Forgot"))
+          s.one("SELECT reason FROM audit_log WHERE table_name = 'punch' AND row_id = ?", (repl[0],))[0].startswith("Punched"))
     s.blocked("second correction of the same punch rejected",
               "INSERT INTO punch_correction (action, employee_id, target_punch_id, reason, actor_user_id) VALUES ('void', ?, ?, 'duplicate correction attempt', ?)",
-              (ana, out_id, mgr), "UNIQUE")
+              (ana, in_id, mgr), "UNIQUE")
     s.x("INSERT INTO punch_correction (action, employee_id, target_punch_id, reason, actor_user_id) VALUES ('void', ?, ?, 'Shift entered twice by mistake', ?)",
         (ana, repl[0], mgr))
-    check("void of the replacement leaves the shift open",
-          s.one("SELECT status FROM shift_v WHERE in_punch_id = ?", (in_id,))[0] == "open")
+    check("void of the replacement leaves the OUT without an IN",
+          s.one("SELECT count(*) FROM punch_exception_v WHERE punch_id = ? AND kind = 'missing_in'", (out_id,))[0] == 1)
     s.x("INSERT INTO punch_correction (action, employee_id, new_direction, new_occurred_utc, new_utc_offset_minutes, reason, actor_user_id)"
-        " VALUES ('add', ?, 'OUT', ?, -240, 'Missed punch, confirmed by timesheet', ?)", (ana, new_out, mgr))
-    check("add closes the shift again", s.one("SELECT status FROM shift_v WHERE in_punch_id = ?", (in_id,))[0] == "closed")
+        " VALUES ('add', ?, 'IN', ?, ?, 'Missed punch, confirmed by timesheet', ?)", (ana, new_in, off_in, mgr))
+    check("add closes the shift again", s.one("SELECT status FROM shift_v WHERE out_punch_id = ?", (out_id,))[0] == "closed")
+    future = now_utc(3600)
+    s.blocked("correction into the future rejected",
+              "INSERT INTO punch_correction (action, employee_id, new_direction, new_occurred_utc, new_utc_offset_minutes, reason, actor_user_id)"
+              " VALUES ('add', ?, 'OUT', ?, ?, 'pre-entering tomorrow''s shift', ?)", (ana, future, site_offset(future), mgr), "in the future")
+    s.blocked("correction with an offset that is not the site zone rejected",
+              "INSERT INTO punch_correction (action, employee_id, new_direction, new_occurred_utc, new_utc_offset_minutes, reason, actor_user_id)"
+              " VALUES ('add', ?, 'OUT', ?, ?, 'offset typed by hand wrongly', ?)", (ana, new_in, off_in + 60, mgr), "time zone")
     s.blocked("reason under 10 characters rejected",
               "INSERT INTO punch_correction (action, employee_id, target_punch_id, reason, actor_user_id) VALUES ('void', ?, ?, 'oops', ?)",
-              (ana, in_id, mgr), "CHECK")
+              (ana, out_id, mgr), "CHECK")
     s.blocked("actor_user_id must be the logged-in user",
               "INSERT INTO punch_correction (action, employee_id, target_punch_id, reason, actor_user_id) VALUES ('void', ?, ?, 'blame someone else', ?)",
-              (ana, in_id, admin), "actor must be")
-    s.act("employee", mia).x("INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'IN', ?, -240, 'kiosk')",
+              (ana, out_id, admin), "actor must be")
+    s.act("employee", mia).x(f"INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'IN', ?, {OFF}, 'kiosk')",
                              (mia, now_utc()))
     mia_in = s.one("SELECT max(id) FROM punch")[0]
+    s.blocked("kiosk punch with an offset that is not the site zone rejected",
+              "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'OUT', ?, ?, 'kiosk')",
+              (mia, now_utc(), OFF + 60), "time zone")
+    s.blocked("kiosk punch in the future rejected",
+              "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'OUT', ?, ?, 'kiosk')",
+              (mia, now_utc(60), OFF), "in the future")
     s.act("user", mgr).blocked("manager cannot correct own punches",
                                "INSERT INTO punch_correction (action, employee_id, target_punch_id, reason, actor_user_id) VALUES ('void', ?, ?, 'not really here', ?)",
                                (mia, mia_in, mgr), "own punches")
     s.act("employee", ana).blocked("employee cannot issue corrections",
                                    "INSERT INTO punch_correction (action, employee_id, target_punch_id, reason, actor_user_id) VALUES ('void', ?, ?, 'self service edit', ?)",
-                                   (ana, in_id, mgr), "actor must be")
+                                   (ana, out_id, mgr), "actor must be")
     s.act("user", mgr).blocked("correction punch with other values rejected",
-                               "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source, correction_id) VALUES (?, 'OUT', ?, -240, 'correction', ?)",
-                               (ana, now_utc(), corr), "does not match")
+                               "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source, correction_id) VALUES (?, 'OUT', ?, ?, 'correction', ?)",
+                               (ana, now_utc(), OFF, corr), "does not match")
     s.blocked("second punch for one correction rejected",
-              "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source, correction_id) VALUES (?, 'OUT', ?, -240, 'correction', ?)",
-              (ana, new_out, corr), "UNIQUE")
+              "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source, correction_id) VALUES (?, 'IN', ?, ?, 'correction', ?)",
+              (ana, new_in, off_in, corr), "UNIQUE")
 
     # --- Employee self-service and deletes ---------------------------------------------
     s.act("employee", ben).x("UPDATE employee SET pin_hash = 'pbkdf2-sha256$b2' WHERE id = ?", (ben,))
@@ -245,11 +284,14 @@ def main():
     s.blocked("audit actor must match context",
               "INSERT INTO audit_log (actor_kind, actor_id, client, action) VALUES ('user', ?, 'x', 'AUTH_LOGIN')",
               (mgr,), "context")
+    s.blocked("audit client must match context",
+              "INSERT INTO audit_log (actor_kind, actor_id, client, action) VALUES ('user', ?, 'OTHER-PC/9.9', 'AUTH_LOGIN')",
+              (admin,), "client does not match")
     s.blocked("backdated audit row rejected",
-              "INSERT INTO audit_log (occurred_utc, actor_kind, actor_id, client, action) VALUES ('2020-01-01T00:00:00.000Z', 'user', ?, 'x', 'AUTH_LOGIN')",
+              "INSERT INTO audit_log (occurred_utc, actor_kind, actor_id, client, action) VALUES ('2020-01-01T00:00:00.000Z', 'user', ?, 'TEST-PC/1.0.0', 'AUTH_LOGIN')",
               (admin,), "database clock")
     s.blocked("explicit seq gap rejected",
-              "INSERT INTO audit_log (seq, actor_kind, actor_id, client, action) VALUES (100000, 'user', ?, 'x', 'AUTH_LOGIN')",
+              "INSERT INTO audit_log (seq, actor_kind, actor_id, client, action) VALUES (100000, 'user', ?, 'TEST-PC/1.0.0', 'AUTH_LOGIN')",
               (admin,), "contiguous")
     s.x("INSERT INTO audit_log (actor_kind, actor_id, client, action, after_json) VALUES ('user', ?, 'TEST-PC/1.0.0', 'AUTH_LOGIN', json_object('username', 'owner'))",
         (admin,))
@@ -262,11 +304,11 @@ def main():
                              " VALUES ('PunchClock.accdb', ?, ?, 'Eastern Standard Time', '1.0', 1, 2)", ("a" * 64, "b" * 64), "migration account")
     s.act("user", 2, "Legacy import from PunchClock.accdb")
     s.x("INSERT INTO import_batch (source_file_name, source_sha256, manifest_sha256, source_time_zone_id, tool_version, manifest_employee_rows, manifest_shift_rows)"
-        " VALUES ('PunchClock.accdb', ?, ?, 'Eastern Standard Time', '1.0', 1, 2)", ("a" * 64, "b" * 64))
+        " VALUES ('PunchClock.accdb', ?, ?, 'Eastern Standard Time', '1.0', 1, 3)", ("a" * 64, "b" * 64))
     batch = s.one("SELECT max(id) FROM import_batch")[0]
     ev = s.one("SELECT actor_id, after_json FROM audit_log WHERE table_name = 'import_batch' AND row_id = ?", (batch,))
     check("one import audit event carries source SHA-256 and manifest counts",
-          ev[0] == 2 and "a" * 64 in ev[1] and '"manifest_shift_rows":2' in ev[1])
+          ev[0] == 2 and "a" * 64 in ev[1] and '"manifest_shift_rows":3' in ev[1])
     s.x("INSERT INTO legacy_employee_raw (import_batch_id, legacy_employee_id, first_name, last_name, is_active, pin_digits) VALUES (?, 7, 'Old', 'Timer', 1, 3)", (batch,))
     s.x("INSERT INTO employee (legacy_id, first_name, last_name, pin_hash, pin_must_change) VALUES (7, 'Old', 'Timer', 'pbkdf2-sha256$o', 1)")
     old = s.one("SELECT id FROM employee WHERE legacy_id = 7")[0]
@@ -281,8 +323,29 @@ def main():
         s.x("INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source, import_batch_id, legacy_shift_id)"
             " VALUES (?, ?, ?, -300, 'legacy_import', ?, 42)", (old, direction, ts, batch))
     check("legacy shift keeps its ID and local wall time",
-          s.one("SELECT in_local, out_local, duration_sec FROM shift_v WHERE employee_id = ?", (old,))
+          s.one("SELECT in_local, out_local, duration_sec FROM shift_v WHERE employee_id = ?"
+                " AND in_punch_id IN (SELECT id FROM punch WHERE legacy_shift_id = 42)", (old,))
           == ("2023-03-02 09:00:00", "2023-03-02 17:00:00", 8 * 3600))
+    imp = ("INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source, import_batch_id, legacy_shift_id)"
+           " VALUES (?, ?, ?, ?, 'legacy_import', ?, ?)")
+    s.blocked("import punch for a shift not in the raw export rejected", imp,
+              (old, "IN", "2023-03-05T14:00:00.000Z", -300, batch, 99), "raw legacy shift")
+    s.blocked("import punch assigned to the wrong employee rejected", imp,
+              (ana, "IN", "2023-03-02T14:00:00.000Z", -300, batch, 41), "raw legacy shift")
+    s.blocked("import punch at a time other than the raw shift rejected", imp,
+              (old, "IN", "2023-03-01T15:00:00.000Z", -300, batch, 41), "raw legacy shift")
+    s.blocked("import punch with an offset that is not the source zone rejected", imp,
+              (old, "IN", "2023-03-01T13:00:00.000Z", -240, batch, 41), "time zone")
+    s.x("INSERT INTO legacy_shift_raw (import_batch_id, legacy_shift_id, legacy_employee_id, time_in_local, time_in_oadate, time_out_local, time_out_oadate)"
+        " VALUES (?, 43, 7, '2023-03-12T02:30:00.000', '44997.1041666667', '2023-03-12T10:00:00.000', '44997.4166666667')", (batch,))
+    s.blocked("spring-forward shift moved one hour needs its DST_INVALID issue first", imp,
+              (old, "IN", "2023-03-12T07:30:00.000Z", -240, batch, 43), "raw legacy shift")
+    s.x("INSERT INTO migration_issue (import_batch_id, legacy_table, legacy_pk, code, disposition) VALUES (?, 'Shift', 43, 'DST_INVALID', 'IMPORTED_FLAGGED')", (batch,))
+    s.x(imp, (old, "IN", "2023-03-12T07:30:00.000Z", -240, batch, 43))
+    s.x(imp, (old, "OUT", "2023-03-12T14:00:00.000Z", -240, batch, 43))
+    check("spring-forward shift imports one hour later once DST_INVALID is recorded",
+          s.one("SELECT in_local FROM shift_v WHERE in_punch_id IN (SELECT id FROM punch WHERE legacy_shift_id = 43)")[0]
+          == "2023-03-12 03:30:00")
     s.x("UPDATE import_batch SET completed_utc = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?", (batch,))
     check("batch closes once reconciled", s.one("SELECT completed_utc IS NOT NULL FROM import_batch WHERE id = ?", (batch,))[0] == 1)
     s.blocked("no imports into a closed batch",
@@ -323,6 +386,9 @@ def main():
     s.blocked("checkpoint of an older position rejected",
               "INSERT INTO audit_checkpoint (audit_seq, audit_hash, schema_fingerprint, key_id, signature)"
               " SELECT seq, row_hash, ?, 'k1', 'sig' FROM audit_log WHERE seq = 5", (fp,), "current chain head")
+    s.blocked("checkpoint with a stale schema fingerprint rejected",
+              "INSERT INTO audit_checkpoint (audit_seq, audit_hash, schema_fingerprint, key_id, signature)"
+              " SELECT seq, row_hash, ?, 'k1', 'sig' FROM audit_log ORDER BY seq DESC LIMIT 1", ("0" * 64,), "current schema")
     s.blocked("checkpoint must match the chain",
               "INSERT INTO audit_checkpoint (audit_seq, audit_hash, schema_fingerprint, key_id, signature) VALUES (?, 'bad', ?, 'k1', 'sig')",
               (head_seq, fp), "does not match")
@@ -342,6 +408,16 @@ def main():
     strict.blocked("trusted_schema = OFF fails closed (app must set it ON)",
                    "UPDATE site_setting SET value = '12' WHERE key = 'max_shift_hours'", (), "unsafe use")
     strict.conn.close()
+
+    # --- A fresh install before the site time zone is set -------------------------------
+    fresh = Session(os.path.join(work, "fresh.db"))
+    fresh.act("user", 1, "initial schema")
+    fresh.conn.executescript("BEGIN;\n" + SCHEMA + "\nCOMMIT;")
+    fresh.x("INSERT INTO employee (first_name, last_name, pin_hash) VALUES ('Early', 'Bird', 'h')")
+    fresh.act("employee", 1).blocked("no punches until the site time zone is configured",
+                                     "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (1, 'IN', ?, 0, 'kiosk')",
+                                     (now_utc(),), "not configured")
+    fresh.conn.close()
 
     # --- Tamper scenarios, each on a fresh copy -----------------------------------------
     def tampered(label):
@@ -410,7 +486,7 @@ def main():
     prev_img = t.one("SELECT after_json FROM audit_log WHERE table_name = 'punch' AND row_id = ?", (in_id,))[0]
     t.blocked("fabricated UPDATE event on a punch rejected",
               "INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json)"
-              " SELECT 'user', ?, 'x', 'UPDATE', 'punch', ?, ?, j FROM punch_snapshot_v WHERE id = ?",
+              " SELECT 'user', ?, 'TEST-PC/1.0.0', 'UPDATE', 'punch', ?, ?, j FROM punch_snapshot_v WHERE id = ?",
               (admin, in_id, prev_img, in_id), "only for mutable tables")
 
     t = tampered("forge_insert")
@@ -423,7 +499,7 @@ def main():
     t.x(s_trigger("punch_ai"))
     t.act("employee", ben).blocked("fabricated INSERT event for a backdated punch rejected",
                                    "INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, after_json)"
-                                   " SELECT 'employee', ?, 'x', 'INSERT', 'punch', id, j FROM punch_snapshot_v WHERE id = ?",
+                                   " SELECT 'employee', ?, 'TEST-PC/1.0.0', 'INSERT', 'punch', id, j FROM punch_snapshot_v WHERE id = ?",
                                    (ben, forged), "not created in this statement")
 
     t = tampered("forge_immutable")
@@ -435,11 +511,11 @@ def main():
     t.x(s_trigger("employee_au"))
     t.blocked("fabricated UPDATE changing an immutable field rejected",
               "INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json)"
-              " SELECT 'user', ?, 'x', 'UPDATE', 'employee', id, ?, j FROM employee_snapshot_v WHERE id = ?",
+              " SELECT 'user', ?, 'TEST-PC/1.0.0', 'UPDATE', 'employee', id, ?, j FROM employee_snapshot_v WHERE id = ?",
               (admin, before_img, ben), "immutable field")
     t.blocked("fabricated event with an image that is not the row rejected",
               "INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json)"
-              " VALUES ('user', ?, 'x', 'UPDATE', 'employee', ?, ?, '{}')", (admin, ben, before_img), "current image")
+              " VALUES ('user', ?, 'TEST-PC/1.0.0', 'UPDATE', 'employee', ?, ?, '{}')", (admin, ben, before_img), "current image")
 
     t = tampered("reuse_id")
     last = t.one("SELECT max(id) FROM punch")[0]
@@ -450,8 +526,41 @@ def main():
     check("deleted punch: drift flags the missing row",
           any(r[0] == "punch" and r[1] == last for r in t.problems()["verify_drift_v"]))
     t.act("employee", owner).blocked("legitimate insert cannot reuse the deleted row id and hide it",
-                                     "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'OUT', ?, -240, 'kiosk')",
+                                     f"INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'OUT', ?, {OFF}, 'kiosk')",
                                      (owner, now_utc()), "already has history")
+
+    # Codex review: an admission trigger dropped for one statement and recreated identically.
+    t = tampered("admission_bypass")
+    t.x("DROP TRIGGER punch_bi")
+    t.act("employee", ana)
+    t.x("INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'IN', ?, ?, 'kiosk')",
+        (ben, now_utc(), OFF))
+    for_ben = t.one("SELECT max(id) FROM punch")[0]
+    t.x("INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'IN', ?, ?, 'kiosk')",
+        (ana, now_utc(-3600), OFF))
+    backdated = t.one("SELECT max(id) FROM punch")[0]
+    t.act("user", 2)
+    t.x("INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source, import_batch_id, legacy_shift_id)"
+        " VALUES (?, 'IN', '2023-03-05T14:00:00.000Z', -300, 'legacy_import', ?, 99)", (old, batch))
+    phantom = t.one("SELECT max(id) FROM punch")[0]
+    t.x(s_trigger("punch_bi"))
+    t.act("user", admin)
+    t.x("DROP TRIGGER punch_correction_bi")
+    t.x("INSERT INTO punch_correction (action, employee_id, new_direction, new_occurred_utc, new_utc_offset_minutes, reason, actor_user_id)"
+        " VALUES ('add', ?, 'OUT', ?, ?, 'adding my own missed punch', ?)", (old, new_in, off_in, admin))
+    self_fix = t.one("SELECT max(id) FROM punch_correction")[0]
+    t.x(s_trigger("punch_correction_bi"))
+    p = t.problems()
+    rules = {(r[0], r[1]) for r in p["verify_rules_v"]}
+    check("admission bypass: fingerprint matches and the other views stay clean",
+          t.one("SELECT fingerprint FROM schema_fingerprint_v")[0] == fp
+          and not any(p[v] for v in VERIFY_VIEWS if v != "verify_rules_v"), p)
+    check("admission bypass: kiosk punch for another employee flagged", ("punch", for_ben) in rules)
+    check("admission bypass: backdated kiosk punch flagged", ("punch", backdated) in rules)
+    check("admission bypass: phantom import punch by a retired account into a closed batch flagged",
+          ("punch", phantom) in rules
+          and len([r for r in p["verify_rules_v"] if r[1] == phantom]) == 2)
+    check("admission bypass: admin self-correction flagged", ("punch_correction", self_fix) in rules)
 
     t = tampered("rewrite_chain")
     t.x("DROP TRIGGER punch_bu")
@@ -461,9 +570,15 @@ def main():
     check("chain rewrite: stored checkpoint no longer matches",
           any("checkpoint" in r[1] for r in t.problems()["verify_chain_v"]))
 
+    check("chain rewrite: a punch moved outside its admission rules is flagged by the rules view",
+          any(r[1] == in_id for r in t.problems()["verify_rules_v"]))
+
+    # The strongest internal-only attack: an edit that still satisfies every admission rule
+    # (kiosk time moved 100 s, inside the 120 s window), with checkpoints removed and the
+    # whole chain recomputed.
     t = tampered("rewrite_chain_full")
     t.x("DROP TRIGGER punch_bu")
-    t.x("UPDATE punch SET occurred_utc = '2020-01-01T00:00:00.000Z' WHERE id = ?", (in_id,))
+    t.x("UPDATE punch SET occurred_utc = strftime('%Y-%m-%dT%H:%M:%fZ', recorded_utc, '-100 seconds') WHERE id = ?", (in_id,))
     t.x(trig)
     t.x("DROP TRIGGER audit_checkpoint_bd")
     t.x("DROP TRIGGER audit_log_bd")
