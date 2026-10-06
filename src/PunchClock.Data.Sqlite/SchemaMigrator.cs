@@ -37,10 +37,10 @@ public sealed partial class SchemaMigrator
 
     // The schema's own schema_fingerprint_v, inlined: the view is part of the schema being
     // checked, so a tampered database could redefine it to return the expected value.
-    // Excludes exactly SQLite's reserved sqlite_* objects (a prefix test: LIKE would treat
-    // "_" as a wildcard and skip a trigger named sqlitex_...) and the runner's own table, by
-    // type as well as name. Carriage returns are ignored so the line endings of the build
-    // that created the database cannot change the result.
+    // Identical to the view's body: exactly SQLite's reserved sqlite_* objects are excluded (a
+    // prefix test: LIKE would treat "_" as a wildcard and skip a trigger named sqlitex_...),
+    // plus the runner's own table by type as well as name; carriage returns are ignored so the
+    // line endings of the build that created the database cannot change the result.
     private const string FingerprintQuery = """
         SELECT pc_sha256(json_group_array(json_array(type, name, tbl_name, replace(sql, char(13), '')) ORDER BY type, name))
           FROM sqlite_schema
@@ -186,7 +186,7 @@ public sealed partial class SchemaMigrator
             ?? throw new InvalidOperationException("The schema fingerprint could not be computed.");
     }
 
-    private static async Task<string?> ReadFingerprintAsync(
+    internal static async Task<string?> ReadFingerprintAsync(
         SqliteConnection connection, SqliteTransaction? transaction, CancellationToken ct)
     {
         await using var command = connection.CreateCommand();

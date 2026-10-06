@@ -215,4 +215,44 @@ public sealed class EmployeeServiceTests : DatabaseTest
         Assert.Equal(EmployeeChangeResult.NotFound, await Db.Employees.SetActiveAsync(AuditActor.System, 999, isActive: true));
         Assert.NotEqual(first, second);
     }
+
+    private async Task<long> AddImportedEmployeeAsync(string storedPin)
+    {
+        // As the importer leaves an employee whose Access PIN lost its leading zeros.
+        await Db.ExecuteAsync(AuditActor.Migration, """
+            INSERT INTO employee (legacy_id, first_name, last_name, pin_hash, pin_must_change)
+            VALUES (17, 'Imported', 'Worker', $hash, 1);
+            """, ("$hash", TestDatabase.FastHasher.Hash(storedPin)));
+        return await Db.ScalarAsync<long>("SELECT id FROM employee WHERE legacy_id = 17;");
+    }
+
+    [Fact]
+    public async Task Imported_pin_that_lost_its_leading_zeros_still_works_until_it_is_replaced()
+    {
+        var id = await AddImportedEmployeeAsync("42");
+
+        // The employee types their real PIN, 0042; Access stored 42.
+        Assert.Equal(PunchRejection.PinChangeRequired, (await Db.Punches.PunchAsync(id, "0042", PunchDirection.In)).Rejection);
+        Assert.Equal(PinChangeResult.NewPinRejected, await Db.Employees.ChangeOwnPinAsync(id, "0042", "042"));
+        Assert.Equal(PinChangeResult.Changed, await Db.Employees.ChangeOwnPinAsync(id, "0042", "5678"));
+        Assert.True((await Db.Punches.PunchAsync(id, "5678", PunchDirection.In)).Accepted);
+
+        // Once replaced, the fallback is gone with the old hash.
+        Assert.Equal(PunchRejection.InvalidPin, (await Db.Punches.PunchAsync(id, "0042", PunchDirection.Out)).Rejection);
+        Assert.Equal(1, await Db.ScalarAsync<long>(
+            "SELECT count(*) FROM audit_log WHERE action = 'AUTH_PIN_FAILED' AND actor_id = $id;", ("$id", id)));
+    }
+
+    [Fact]
+    public async Task Leading_zero_fallback_is_only_for_imported_pins_and_counts_one_failure()
+    {
+        var imported = await AddImportedEmployeeAsync("123");
+        var local = await Db.AddEmployeeAsync("123", "Grace", "Hopper");
+
+        Assert.Equal(PunchRejection.InvalidPin, (await Db.Punches.PunchAsync(local, "0123", PunchDirection.In)).Rejection);
+        Assert.Equal(PunchRejection.InvalidPin, (await Db.Punches.PunchAsync(imported, "0999", PunchDirection.In)).Rejection);
+        Assert.Equal(PunchRejection.InvalidPin, (await Db.Punches.PunchAsync(imported, "000", PunchDirection.In)).Rejection);
+        Assert.Equal(2, await Db.ScalarAsync<long>(
+            "SELECT count(*) FROM audit_log WHERE action = 'AUTH_PIN_FAILED' AND actor_id = $id;", ("$id", imported)));
+    }
 }

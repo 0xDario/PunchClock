@@ -1,9 +1,12 @@
+using System.Globalization;
 using System.Windows;
 using System.Windows.Input;
+using Microsoft.Win32;
 using PunchClock.Core.Accounts;
 using PunchClock.Core.Audit;
 using PunchClock.Core.Employees;
 using PunchClock.Core.Punches;
+using PunchClock.Core.Reports;
 using PunchClock.Core.Site;
 using PunchClock.Core.Security;
 
@@ -44,8 +47,17 @@ public partial class AdminWindow : Window
         CorrectionFrom.SelectedDate = today.AddDays(-13);
         CorrectionTo.SelectedDate = today;
         CorrectionDate.SelectedDate = today;
+        ReportFrom.SelectedDate = today.AddDays(-13);
+        ReportTo.SelectedDate = today;
 
-        Loaded += async (_, _) => await RunAsync(ReloadAsync);
+        Loaded += async (_, _) => await RunAsync(async () =>
+        {
+            await ReloadAsync();
+            if (admin.Role == UserRole.Admin)
+            {
+                await ReloadWarningsAsync();
+            }
+        });
         Closed += async (_, _) => await SignOutOnceAsync();
     }
 
@@ -222,6 +234,110 @@ public partial class AdminWindow : Window
             await _services.Site.SetTimeZoneAsync(_admin, zoneId);
             await ReloadAsync();
             Show($"Site time zone set to {zoneId}.");
+        });
+    }
+
+    private async Task ReloadWarningsAsync()
+    {
+        var warnings = await Task.Run(() => _services.Maintenance.FindWarningsAsync());
+        WarningList.ItemsSource = warnings;
+        WarningList.Visibility = warnings.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        WarningSummary.Text = warnings.Count == 0
+            ? "None. The PC clock never ran backwards and every punch's time zone offset matches."
+            : $"{warnings.Count} to review. The PC clock ran backwards, or a punch's saved offset differs from today's time zone "
+              + "rules (for example after a Windows time zone update). Neither proves tampering: check each against paper records.";
+    }
+
+    private async void Backup_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new SaveFileDialog
+        {
+            Title = "Back up the PunchClock database",
+            Filter = "PunchClock backup (*.db)|*.db",
+            DefaultExt = ".db",
+            AddExtension = true,
+            OverwritePrompt = false,
+            FileName = $"punchclock-backup-{DateTime.Now.ToString("yyyy-MM-dd-HHmm", CultureInfo.InvariantCulture)}.db",
+        };
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        var path = dialog.FileName;
+        await RunAsync(async () =>
+        {
+            var result = await Task.Run(() => _services.Maintenance.BackupAsync(_admin, path));
+            BackupResult.Text = $"Saved and verified: {result.Path} ({result.Bytes / 1024.0:N0} KB). "
+                + $"It holds the audit log up to entry {result.AuditHeadSeq}. SHA-256 {result.Sha256}.";
+            Show("Backup saved, verified and recorded in the audit log.");
+        });
+    }
+
+    private (DateOnly From, DateOnly To)? ReadReportPeriod()
+    {
+        if (ReportFrom.SelectedDate is not { } from || ReportTo.SelectedDate is not { } to || to < from)
+        {
+            Show("Pick the first and last day of the period.", isError: true);
+            return null;
+        }
+
+        return (DateOnly.FromDateTime(from), DateOnly.FromDateTime(to));
+    }
+
+    private async void RunReport_Click(object sender, RoutedEventArgs e)
+    {
+        if (ReadReportPeriod() is not { } period)
+        {
+            return;
+        }
+
+        await RunAsync(async () =>
+        {
+            var report = await Task.Run(() => _services.Reports.PayReportAsync(_admin, period.From, period.To));
+            PayLines.ItemsSource = report.Lines;
+            UncountedShifts.ItemsSource = report.NotCounted;
+            ReportTotal.Text = $"{report.Lines.Sum(l => l.Shifts)} shifts, {report.TotalMinutes / 60m:0.00} hours";
+            Show(report.NotCounted.Count == 0
+                ? "Report ready."
+                : $"Report ready. {report.NotCounted.Count} shift(s) are not counted in this period; see the list below.");
+        });
+    }
+
+    private async void ExportPayReport_Click(object sender, RoutedEventArgs e) =>
+        await ExportAsync("pay-report", (from, to, path) => _services.Reports.ExportPayReportAsync(_admin, from, to, path));
+
+    private async void ExportPunches_Click(object sender, RoutedEventArgs e) =>
+        await ExportAsync("punches", (from, to, path) => _services.Reports.ExportPunchesAsync(_admin, from, to, path));
+
+    private async void ExportCorrections_Click(object sender, RoutedEventArgs e) =>
+        await ExportAsync("corrections", (from, to, path) => _services.Reports.ExportCorrectionsAsync(_admin, from, to, path));
+
+    private async Task ExportAsync(string kind, Func<DateOnly, DateOnly, string, Task<ExportResult>> export)
+    {
+        if (ReadReportPeriod() is not { } period)
+        {
+            return;
+        }
+
+        var dialog = new SaveFileDialog
+        {
+            Title = "Export to CSV",
+            Filter = "CSV files (*.csv)|*.csv",
+            DefaultExt = ".csv",
+            AddExtension = true,
+            FileName = string.Create(CultureInfo.InvariantCulture, $"{kind}-{period.From:yyyy-MM-dd}-to-{period.To:yyyy-MM-dd}.csv"),
+        };
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        var path = dialog.FileName;
+        await RunAsync(async () =>
+        {
+            var result = await Task.Run(() => export(period.From, period.To, path));
+            Show($"Saved {result.Rows} row(s) to {result.Path} and recorded the export in the audit log.");
         });
     }
 

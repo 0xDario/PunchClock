@@ -53,9 +53,7 @@ public partial class ChangePinWindow : Window
             {
                 PinChangeResult.TooManyAttempts =>
                     $"Too many incorrect PINs. Try again in {PinPolicy.LockoutWindow.TotalMinutes:0} minutes or ask a manager.",
-                PinChangeResult.NewPinRejected => newPin == _currentPin
-                    ? "Choose a PIN different from your current one."
-                    : PinPolicy.Validate(newPin) ?? "That PIN is not allowed. Choose another.",
+                PinChangeResult.NewPinRejected => PinPolicy.Validate(newPin) ?? "Choose a PIN different from your current one.",
                 _ => "The PIN could not be changed. Ask a manager.",
             };
         }
