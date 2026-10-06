@@ -91,8 +91,8 @@ public partial class AdminWindow : Window
 
         // The dates are site dates; widen by a day each side so any zone is covered, then trim.
         var zone = SiteTime.ResolveZone(await _services.Site.GetTimeZoneIdAsync(), TimeZoneInfo.Local);
-        var rows = await _services.Corrections.ListAsync(
-            employee.Id, new DateTimeOffset(from.Date.AddDays(-1), TimeSpan.Zero), new DateTimeOffset(to.Date.AddDays(2), TimeSpan.Zero));
+        var (fromUtc, toUtc) = SiteTime.CoveringUtcRange(from, to);
+        var rows = await _services.Corrections.ListAsync(employee.Id, fromUtc, toUtc);
         PunchList.ItemsSource = rows
             .Where(r =>
             {

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using PunchClock.Core.Audit;
 using PunchClock.Core.Persistence;
@@ -46,6 +48,12 @@ public sealed class AccountService(IPunchClockStore store, IPinHasher passwordHa
 
     public static readonly TimeSpan SignInLockout = TimeSpan.FromMinutes(15);
 
+    private static readonly byte[] UsernameDigestSalt = Encoding.UTF8.GetBytes("PunchClock sign-in username v1");
+
+    // Checked when the username is unknown or cannot sign in, so every failure costs one full
+    // password verification and the response time does not reveal which usernames exist.
+    private readonly Lazy<string> _decoyHash = new(() => passwordHasher.Hash(Guid.NewGuid().ToString()));
+
     /// <summary>True until the first admin exists; only then may <see cref="CreateFirstAdminAsync"/> run.</summary>
     public async Task<bool> NeedsFirstAdminAsync(CancellationToken ct = default)
     {
@@ -89,27 +97,30 @@ public sealed class AccountService(IPunchClockStore store, IPinHasher passwordHa
     public async Task<AppUser?> SignInAsync(string username, string password, CancellationToken ct = default)
     {
         username = username.Trim();
+        var digest = UsernameDigest(username);
         await using var uow = await store.BeginAsync(ct);
         var user = await uow.FindUserByUsernameAsync(username, ct);
 
         // Checked before the password, for unknown usernames too, so a locked guess learns nothing.
-        if (await uow.CountRecentSignInFailuresAsync(username, user?.Id, SignInLockout, ct) >= MaxFailedSignIns)
+        if (await uow.CountRecentSignInFailuresAsync(digest, user?.Id, SignInLockout, ct) >= MaxFailedSignIns)
         {
             throw new SignInLockedException(SignInLockout);
         }
 
-        if (user is { IsActive: true, IsServiceAccount: false, PasswordHash: { } hash }
-            && passwordHasher.Verify(password, hash))
+        var signer = user is { IsActive: true, IsServiceAccount: false, PasswordHash: not null } ? user : null;
+        if (passwordHasher.Verify(password, signer?.PasswordHash ?? _decoyHash.Value) && signer is not null)
         {
-            uow.ActAs(AuditActor.ForUser(user.Id));
+            uow.ActAs(AuditActor.ForUser(signer.Id));
             await uow.RecordEventAsync(AuditEvent.AuthLogin, ct: ct);
             await uow.CommitAsync(ct);
-            return user;
+            return signer;
         }
 
-        // Nobody is authenticated, so the system account records the attempt.
+        // Nobody is authenticated, so the system account records the attempt. What was typed is
+        // kept only when it names an account: people type passwords into the username box, and
+        // the log is permanent. The digest still lets unknown names lock out like real ones.
         uow.ActAs(AuditActor.System);
-        await uow.RecordEventAsync(AuditEvent.AuthLoginFailed, JsonSerializer.Serialize(new { username }), ct);
+        await uow.RecordEventAsync(AuditEvent.AuthLoginFailed, FailureDetail(user?.Username, digest), ct);
         await uow.CommitAsync(ct);
         return null;
     }
@@ -166,7 +177,8 @@ public sealed class AccountService(IPunchClockStore store, IPinHasher passwordHa
             return PasswordChangeResult.NotAllowed;
         }
 
-        if (await uow.CountRecentSignInFailuresAsync(current.Username, current.Id, SignInLockout, ct) >= MaxFailedSignIns)
+        var digest = UsernameDigest(current.Username);
+        if (await uow.CountRecentSignInFailuresAsync(digest, current.Id, SignInLockout, ct) >= MaxFailedSignIns)
         {
             return PasswordChangeResult.TooManyAttempts;
         }
@@ -174,7 +186,7 @@ public sealed class AccountService(IPunchClockStore store, IPinHasher passwordHa
         uow.ActAs(AuditActor.ForUser(current.Id));
         if (!passwordHasher.Verify(currentPassword, hash))
         {
-            await uow.RecordEventAsync(AuditEvent.AuthLoginFailed, JsonSerializer.Serialize(new { username = current.Username }), ct);
+            await uow.RecordEventAsync(AuditEvent.AuthLoginFailed, FailureDetail(current.Username, digest), ct);
             await uow.CommitAsync(ct);
             return PasswordChangeResult.InvalidCurrentPassword;
         }
@@ -306,6 +318,17 @@ public sealed class AccountService(IPunchClockStore store, IPinHasher passwordHa
         await uow.CommitAsync(ct);
         return AccountChangeResult.Changed;
     }
+
+    /// <summary>
+    /// Lockout key for a typed username: case-insensitive, and a slow salted hash so a username box
+    /// that received a password does not leave it readable, or cheaply guessable, in the audit log.
+    /// </summary>
+    internal static string UsernameDigest(string username) => Convert.ToHexStringLower(Rfc2898DeriveBytes.Pbkdf2(
+        Encoding.UTF8.GetBytes(username.Trim().ToLowerInvariant()), UsernameDigestSalt, 100_000, HashAlgorithmName.SHA256, 32));
+
+    private static string FailureDetail(string? knownUsername, string digest) => knownUsername is null
+        ? JsonSerializer.Serialize(new { username_digest = digest })
+        : JsonSerializer.Serialize(new { username = knownUsername, username_digest = digest });
 
     private static bool IsActiveAdmin(AppUser user) => user is { Role: UserRole.Admin, IsActive: true };
 

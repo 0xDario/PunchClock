@@ -70,8 +70,11 @@ public sealed class SqliteDatabase
         // trusted_schema = ON: the schema's triggers and views call the two functions above;
         //   with it off SQLite refuses them ("unsafe use of pc_sha256()") and every write fails.
         // synchronous = FULL: a committed punch survives power loss.
+        // recursive_triggers = ON: without it the REPLACE conflict resolution deletes rows without
+        //   firing their BEFORE DELETE triggers, bypassing "never deleted" and the append-only log.
         pragma.CommandText = """
             PRAGMA foreign_keys = ON;
+            PRAGMA recursive_triggers = ON;
             PRAGMA synchronous = FULL;
             PRAGMA busy_timeout = 5000;
             PRAGMA trusted_schema = ON;

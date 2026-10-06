@@ -37,10 +37,15 @@ public sealed partial class SchemaMigrator
 
     // The schema's own schema_fingerprint_v, inlined: the view is part of the schema being
     // checked, so a tampered database could redefine it to return the expected value.
+    // Excludes exactly SQLite's reserved sqlite_* objects (a prefix test: LIKE would treat
+    // "_" as a wildcard and skip a trigger named sqlitex_...) and the runner's own table, by
+    // type as well as name. Carriage returns are ignored so the line endings of the build
+    // that created the database cannot change the result.
     private const string FingerprintQuery = """
-        SELECT pc_sha256(json_group_array(json_array(type, name, tbl_name, sql) ORDER BY type, name))
+        SELECT pc_sha256(json_group_array(json_array(type, name, tbl_name, replace(sql, char(13), '')) ORDER BY type, name))
           FROM sqlite_schema
-         WHERE name NOT LIKE 'sqlite_%' AND name <> 'schema_migrations';
+         WHERE substr(name, 1, 7) <> 'sqlite_'
+           AND NOT (type = 'table' AND name = 'schema_migrations');
         """;
 
     private static readonly Lazy<Task<string>> EmbeddedFingerprint = new(() => ComputeFingerprintAsync(LoadEmbedded()));
@@ -109,18 +114,17 @@ public sealed partial class SchemaMigrator
         var newlyApplied = new List<int>();
         foreach (var migration in Migrations.Where(m => !applied.ContainsKey(m.Version)))
         {
-            await ExecuteAsync(connection, transaction, migration.Sql, ct);
+            await ExecuteAsync(connection, transaction, migration.Sql.ReplaceLineEndings("\n"), ct);
 
             await using var record = connection.CreateCommand();
             record.Transaction = transaction;
             record.CommandText = """
                 INSERT INTO schema_migrations (version, name, checksum, applied_at_utc)
-                VALUES ($version, $name, $checksum, $at);
+                VALUES ($version, $name, $checksum, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
                 """;
             record.Parameters.AddWithValue("$version", migration.Version);
             record.Parameters.AddWithValue("$name", migration.Name);
             record.Parameters.AddWithValue("$checksum", migration.Checksum);
-            record.Parameters.AddWithValue("$at", SqliteTime.ToText(DateTimeOffset.UtcNow));
             await record.ExecuteNonQueryAsync(ct);
 
             await using var audit = connection.CreateCommand();
@@ -175,7 +179,7 @@ public sealed partial class SchemaMigrator
         await using var transaction = connection.BeginTransaction();
         foreach (var migration in migrations)
         {
-            await ExecuteAsync(connection, transaction, migration.Sql, default);
+            await ExecuteAsync(connection, transaction, migration.Sql.ReplaceLineEndings("\n"), default);
         }
 
         return await ReadFingerprintAsync(connection, transaction, default)
