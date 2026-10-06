@@ -24,7 +24,8 @@ public partial class App : Application
                 new EmployeeService(store, hasher),
                 new PunchService(store, hasher, TimeProvider.System),
                 new AccountService(store, hasher),
-                new SiteSettingsService(store));
+                new SiteSettingsService(store),
+                new PunchCorrectionService(store, TimeProvider.System));
 
 #if DEBUG
             await DemoData.SeedIfRequestedAsync(services.Employees);
@@ -52,4 +53,5 @@ public sealed record AppServices(
     EmployeeService Employees,
     PunchService Punches,
     AccountService Accounts,
-    SiteSettingsService Site);
+    SiteSettingsService Site,
+    PunchCorrectionService Corrections);
