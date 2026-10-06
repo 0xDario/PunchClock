@@ -30,7 +30,7 @@ public partial class App : Application
             await DemoData.SeedIfEmptyAsync(services.Employees);
 #endif
 
-            var viewModel = new MainViewModel(services.Employees, services.Punches, TimeProvider.System);
+            var viewModel = new MainViewModel(services.Employees, services.Punches, services.Site, TimeProvider.System);
             MainWindow = new MainWindow(viewModel, services);
             MainWindow.Show();
             await viewModel.LoadAsync();

@@ -3,13 +3,18 @@ using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using PunchClock.Core.Employees;
 using PunchClock.Core.Punches;
+using PunchClock.Core.Site;
 
 namespace PunchClock.App;
 
 public sealed record EmployeeOption(long Id, string DisplayName);
 
-public sealed partial class MainViewModel(EmployeeService employees, PunchService punches, TimeProvider clock) : ObservableObject
+public sealed partial class MainViewModel(
+    EmployeeService employees, PunchService punches, SiteSettingsService site, TimeProvider clock) : ObservableObject
 {
+    // The zone punches are recorded in, so the clock on screen agrees with the punch messages.
+    private TimeZoneInfo _zone = clock.LocalTimeZone;
+
     public ObservableCollection<EmployeeOption> Employees { get; } = [];
 
     [ObservableProperty]
@@ -36,6 +41,9 @@ public sealed partial class MainViewModel(EmployeeService employees, PunchServic
 
     public async Task LoadAsync()
     {
+        _zone = SiteTime.ResolveZone(await site.GetTimeZoneIdAsync(), clock.LocalTimeZone);
+        Tick();
+
         Employees.Clear();
         foreach (var employee in await employees.ListActiveAsync())
         {
@@ -45,7 +53,7 @@ public sealed partial class MainViewModel(EmployeeService employees, PunchServic
 
     public void Tick()
     {
-        var now = clock.GetLocalNow();
+        var now = TimeZoneInfo.ConvertTime(clock.GetUtcNow(), _zone);
         Clock = now.ToString("t", CultureInfo.CurrentCulture);
         Date = now.ToString("D", CultureInfo.CurrentCulture);
     }
@@ -96,6 +104,7 @@ public sealed partial class MainViewModel(EmployeeService employees, PunchServic
         {
             null => $"{employee.DisplayName} punched {(direction == PunchDirection.In ? "in" : "out")} at {result.Punch!.OccurredAtLocal.ToString("t", CultureInfo.CurrentCulture)}.",
             PunchRejection.InvalidPin => "Incorrect PIN. Nothing was recorded.",
+            PunchRejection.PinChangeRequired => "Your PIN must be replaced before you can punch. Nothing was recorded.",
             PunchRejection.AlreadyPunchedIn => $"You are already punched in since {lastAt}. If you forgot to punch out, punch out now and ask a manager to correct the time.",
             PunchRejection.NotPunchedIn => "You are not punched in, so there is nothing to punch out of. Ask a manager if a punch-in is missing.",
             PunchRejection.ClockBehindLastPunch => $"This computer's clock is earlier than your last punch ({lastAt}). Nothing was recorded; tell a manager.",

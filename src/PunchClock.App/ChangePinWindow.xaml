@@ -5,7 +5,7 @@
         WindowStartupLocation="CenterOwner" FontSize="15">
     <StackPanel Margin="24">
         <TextBlock TextWrapping="Wrap" Margin="0,0,0,16"
-                   Text="Your punch was recorded. Your PIN came from the old system and must be replaced. Choose a new 3-6 digit PIN." />
+                   Text="Your PIN came from the old system and must be replaced before you can punch. Choose a new 3-6 digit PIN; your punch is recorded as soon as it is saved." />
         <Label Content="_New PIN" Target="{Binding ElementName=NewPin}" Padding="0,0,0,4" />
         <PasswordBox x:Name="NewPin" MaxLength="6" Padding="6" Margin="0,0,0,12"
                      PreviewTextInput="Pin_PreviewTextInput" DataObject.Pasting="Pin_Pasting" />
@@ -14,7 +14,7 @@
                      PreviewTextInput="Pin_PreviewTextInput" DataObject.Pasting="Pin_Pasting" />
         <TextBlock x:Name="Error" Foreground="#C62828" TextWrapping="Wrap" Margin="0,12,0,0" />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
-            <Button Content="_Later" IsCancel="True" Padding="14,6" Margin="0,0,8,0" />
+            <Button Content="_Cancel" IsCancel="True" Padding="14,6" Margin="0,0,8,0" />
             <Button x:Name="SaveButton" Content="_Save PIN" IsDefault="True" Click="Save_Click" Padding="14,6" />
         </StackPanel>
     </StackPanel>

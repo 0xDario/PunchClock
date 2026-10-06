@@ -18,6 +18,10 @@ public sealed class SqlitePunchClockStore(SqliteDatabase database) : IPunchClock
             // BEGIN IMMEDIATE: take the write lock up front so a read-check-insert sequence
             // cannot interleave with another writer. Contention waits up to DefaultTimeout.
             var transaction = connection.BeginTransaction(deferred: false);
+
+            // Startup checked the schema once; a kiosk runs for months, so every unit of work
+            // checks again under the write lock before trusting the triggers to guard its writes.
+            await SchemaMigrator.EnsureSchemaIntactAsync(connection, transaction, ct);
             return new SqliteUnitOfWork(connection, transaction, context);
         }
         catch
