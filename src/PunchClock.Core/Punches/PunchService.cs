@@ -49,7 +49,7 @@ public sealed record PunchResult(Punch? Punch, PunchRejection? Rejection, Punch?
 /// <see cref="PunchRejection.AlreadyPunchedIn"/> rather than silently becoming a multi-day shift.
 /// The database enforces the same ownership and timing rules again in its triggers.
 /// </summary>
-public sealed class PunchService(IPunchClockStore store, IPinHasher pinHasher, TimeProvider clock)
+public sealed class PunchService(IPunchClockStore store, IPinHasher pinHasher)
 {
     public async Task<PunchResult> PunchAsync(long employeeId, string pin, PunchDirection direction, CancellationToken ct = default)
     {
@@ -110,7 +110,9 @@ public sealed class PunchService(IPunchClockStore store, IPinHasher pinHasher, T
             return PunchResult.Reject(PunchRejection.NotPunchedIn, last);
         }
 
-        var now = clock.GetUtcNow();
+        // Read inside the write transaction, so the INSERT's recorded_utc (the same clock, read
+        // later) can never be earlier than this.
+        var now = await uow.GetDatabaseUtcNowAsync(ct);
         if (last is not null && now < last.OccurredAtUtc)
         {
             return PunchResult.Reject(PunchRejection.ClockBehindLastPunch, last);

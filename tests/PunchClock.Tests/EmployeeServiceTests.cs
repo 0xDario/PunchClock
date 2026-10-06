@@ -175,7 +175,6 @@ public sealed class EmployeeServiceTests : DatabaseTest
 
             var direction = round == 0 ? PunchDirection.In : PunchDirection.Out;
             Assert.True((await Db.Punches.PunchAsync(id, "1234", direction)).Accepted);
-            Db.Clock.Advance(TimeSpan.FromSeconds(1));
         }
     }
 

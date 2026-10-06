@@ -173,6 +173,12 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
         await ExpectOneRowAsync(command, $"Employee {employeeId}", ct);
     }
 
+    public async Task<DateTimeOffset> GetDatabaseUtcNowAsync(CancellationToken ct = default)
+    {
+        await using var command = Command("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now');");
+        return SqliteTime.Parse((string)(await command.ExecuteScalarAsync(ct))!);
+    }
+
     public async Task<Punch?> FindLatestPunchAsync(long employeeId, CancellationToken ct = default)
     {
         // Effective punches only: a punch superseded by a correction no longer counts.

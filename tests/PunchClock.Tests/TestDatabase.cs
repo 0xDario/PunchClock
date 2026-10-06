@@ -23,21 +23,15 @@ public sealed class TestDatabase : IAsyncLifetime
         Database = new SqliteDatabase(Path.Combine(_directory, "punchclock.db"), "TEST-PC/0.0.0");
         Store = new SqlitePunchClockStore(Database);
         Employees = new EmployeeService(Store, FastHasher);
-        Punches = new PunchService(Store, FastHasher, Clock);
+        Punches = new PunchService(Store, FastHasher);
         Accounts = new AccountService(Store, FastHasher);
         Site = new SiteSettingsService(Store);
-        Corrections = new PunchCorrectionService(Store, Clock);
+        Corrections = new PunchCorrectionService(Store);
     }
 
     public SqliteDatabase Database { get; }
 
     public SqlitePunchClockStore Store { get; }
-
-    /// <summary>
-    /// Starts just behind the real time: the schema rejects kiosk punches later than the database
-    /// clock or more than 120 s behind it, so tests may advance a few seconds but not minutes.
-    /// </summary>
-    public ManualTimeProvider Clock { get; } = new(DateTimeOffset.UtcNow.AddSeconds(-30));
 
     public EmployeeService Employees { get; }
 
@@ -162,16 +156,6 @@ public sealed class TestDatabase : IAsyncLifetime
     }
 }
 
-public sealed class ManualTimeProvider(DateTimeOffset utcNow, TimeZoneInfo? zone = null) : TimeProvider
-{
-    public DateTimeOffset UtcNow { get; set; } = utcNow;
-
-    public override DateTimeOffset GetUtcNow() => UtcNow;
-
-    public override TimeZoneInfo LocalTimeZone { get; } = zone ?? TimeZoneInfo.Utc;
-
-    public void Advance(TimeSpan by) => UtcNow += by;
-}
 
 /// <summary>Gives each test its own freshly migrated database.</summary>
 public abstract class DatabaseTest : IAsyncLifetime
