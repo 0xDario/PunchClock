@@ -159,7 +159,7 @@ function Get-ControlTotalsSql([string]$Table, [object[]]$Columns) {
     for ($i = 0; $i -lt $Columns.Count; $i++) {
         $c = $Columns[$i]
         $parts.Add("COUNT([$($c.name)]) AS [nn_$i]")
-        if ($c.category -eq 'integer' -or $c.category -eq 'decimal') { $parts.Add("SUM([$($c.name)]) AS [sum_$i]") }
+        if ($c.category -eq 'integer' -or $c.category -eq 'decimal' -or $c.category -eq 'float') { $parts.Add("SUM([$($c.name)]) AS [sum_$i]") }
         if ($c.category -eq 'datetime') {
             $parts.Add("MIN([$($c.name)]) AS [min_$i]")
             $parts.Add("MAX([$($c.name)]) AS [max_$i]")
@@ -174,7 +174,7 @@ function Read-ControlTotals([Data.IDataReader]$Reader, [object[]]$Columns) {
     for ($i = 0; $i -lt $Columns.Count; $i++) {
         $c = $Columns[$i]
         $t = [ordered]@{ non_null = [long]$Reader['nn_' + $i] }
-        if ($c.category -eq 'integer' -or $c.category -eq 'decimal') { $t.sum = Format-Scalar $Reader['sum_' + $i] }
+        if ($c.category -eq 'integer' -or $c.category -eq 'decimal' -or $c.category -eq 'float') { $t.sum = Format-Scalar $Reader['sum_' + $i] }
         if ($c.category -eq 'datetime') {
             $t.min = Format-Scalar $Reader['min_' + $i]
             $t.max = Format-Scalar $Reader['max_' + $i]
@@ -371,8 +371,15 @@ try {
                 Sort-Object { [int]$_['ORDINAL'] } | ForEach-Object { [string]$_['COLUMN_NAME'] })
         }
         catch { $warnings.Add("Primary key of $tname not read: $($_.Exception.GetBaseException().Message)") }
-        if ($pk.Count -eq 0) { $warnings.Add("$tname has no primary key; rows ordered by $($columns[0].name)") }
-        $orderBy = if ($pk.Count -gt 0) { $pk } else { @($columns[0].name) }
+        # Access cannot sort OLE Object or Attachment fields, so a keyless table is
+        # ordered by its first sortable column, or left unordered if it has none.
+        $orderBy = @($pk)
+        if ($pk.Count -eq 0) {
+            $sortable = @($columns | Where-Object { $_.category -ne 'binary' -and $_.category -ne 'other' } | Select-Object -First 1)
+            if ($sortable.Count -gt 0) { $orderBy = @($sortable[0].name) }
+            $by = if ($orderBy.Count -gt 0) { "ordered by $($orderBy[0])" } else { 'unordered (no sortable column)' }
+            $warnings.Add("$tname has no primary key; rows $by")
+        }
 
         $cmd = $conn.CreateCommand()
         $cmd.CommandText = Get-ControlTotalsSql $tname $columns
@@ -381,7 +388,7 @@ try {
 
         # Raw dates come from CDbl() in Access when it accepts the expression. Access can
         # raise expression errors while fetching, so the fallback wraps the whole export.
-        $orderSql = [string]::Join(', ', @($orderBy | ForEach-Object { "[$_]" }))
+        $orderSql = if ($orderBy.Count -gt 0) { ' ORDER BY ' + [string]::Join(', ', @($orderBy | ForEach-Object { "[$_]" })) } else { '' }
         $csvPath = Join-Path $OutDir "$tname.csv"
         $oadateSource = $null
         $result = $null
@@ -404,7 +411,7 @@ try {
                 }
             }
             $cmd = $conn.CreateCommand()
-            $cmd.CommandText = "SELECT $([string]::Join(', ', $select)) FROM [$tname] ORDER BY $orderSql"
+            $cmd.CommandText = "SELECT $([string]::Join(', ', $select)) FROM [$tname]$orderSql"
             try {
                 $rd = $cmd.ExecuteReader()
                 try { $result = Export-ReaderToCsv -Reader $rd -Spec $spec.ToArray() -KeyOrdinal $keyOrdinal -Path $csvPath }
