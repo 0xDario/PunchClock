@@ -396,6 +396,27 @@ SELECT d.import_batch_id, d.legacy_shift_id, d.legacy_employee_id, d.direction, 
           FROM legacy_shift_raw) d
  WHERE d.wall_local IS NOT NULL;
 
+-- Raw rows the import has not accounted for: every raw employee becomes an employee with
+-- that legacy_id and every raw shift becomes its punches (IN, plus OUT when TimeOut is
+-- set), unless a SKIPPED migration_issue says why not. A batch cannot close while any remain.
+CREATE VIEW import_unreconciled_v AS
+SELECT r.import_batch_id, 'Employee' AS legacy_table, r.legacy_employee_id AS legacy_pk,
+       'no employee with this legacy_id' AS problem
+  FROM legacy_employee_raw r
+ WHERE NOT EXISTS (SELECT 1 FROM employee e WHERE e.legacy_id = r.legacy_employee_id)
+   AND NOT EXISTS (SELECT 1 FROM migration_issue i
+                    WHERE i.import_batch_id = r.import_batch_id AND i.legacy_table = 'Employee'
+                      AND i.legacy_pk = r.legacy_employee_id AND i.disposition = 'SKIPPED')
+UNION ALL
+SELECT v.import_batch_id, 'Shift', v.legacy_shift_id, 'no ' || v.direction || ' punch for this shift'
+  FROM legacy_punch_source_v v
+ WHERE NOT EXISTS (SELECT 1 FROM punch p
+                    WHERE p.source = 'legacy_import' AND p.import_batch_id = v.import_batch_id
+                      AND p.legacy_shift_id = v.legacy_shift_id AND p.direction = v.direction)
+   AND NOT EXISTS (SELECT 1 FROM migration_issue i
+                    WHERE i.import_batch_id = v.import_batch_id AND i.legacy_table = 'Shift'
+                      AND i.legacy_pk = v.legacy_shift_id AND i.disposition = 'SKIPPED');
+
 -- The connection's actor when it is an active app_user; empty otherwise.
 CREATE VIEW ctx_user_v AS
 SELECT u.* FROM app_user u
@@ -409,6 +430,13 @@ WHERE pc_ctx('actor_kind') = 'user' AND u.id = pc_ctx('actor_id') AND u.is_activ
 CREATE TRIGGER site_setting_bi BEFORE INSERT ON site_setting BEGIN
   SELECT RAISE(ABORT, 'site_setting: admin only')
    WHERE NOT EXISTS (SELECT 1 FROM ctx_user_v WHERE role IN ('system', 'admin'));
+  SELECT RAISE(ABORT, 'site_setting: time_zone_id must be a known Windows time zone id')
+   WHERE NEW.key = 'time_zone_id' AND NEW.value IS NOT 'UNSET'
+     AND pc_utc_offset(NEW.value, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) IS NULL;
+  SELECT RAISE(ABORT, 'site_setting: max_shift_hours must be a whole number from 1 to 48')
+   WHERE NEW.key = 'max_shift_hours'
+     AND NOT (NEW.value GLOB '[1-9]*' AND NEW.value NOT GLOB '*[^0-9]*' AND length(NEW.value) <= 2
+              AND CAST(NEW.value AS INTEGER) BETWEEN 1 AND 48);
 END;
 CREATE TRIGGER site_setting_ai AFTER INSERT ON site_setting BEGIN
   INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json, reason)
@@ -424,6 +452,10 @@ CREATE TRIGGER site_setting_bu BEFORE UPDATE ON site_setting BEGIN
   SELECT RAISE(ABORT, 'site_setting: time_zone_id must be a known Windows time zone id')
    WHERE NEW.key = 'time_zone_id'
      AND pc_utc_offset(NEW.value, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) IS NULL;
+  SELECT RAISE(ABORT, 'site_setting: max_shift_hours must be a whole number from 1 to 48')
+   WHERE NEW.key = 'max_shift_hours'
+     AND NOT (NEW.value GLOB '[1-9]*' AND NEW.value NOT GLOB '*[^0-9]*' AND length(NEW.value) <= 2
+              AND CAST(NEW.value AS INTEGER) BETWEEN 1 AND 48);
 END;
 CREATE TRIGGER site_setting_au AFTER UPDATE ON site_setting BEGIN
   INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json, reason)
@@ -442,6 +474,8 @@ CREATE TRIGGER employee_bi BEFORE INSERT ON employee BEGIN
    WHERE NEW.created_utc IS NOT strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
   SELECT RAISE(ABORT, 'employee: manager, admin or migration only')
    WHERE NOT EXISTS (SELECT 1 FROM ctx_user_v WHERE role IN ('system', 'migration', 'admin', 'manager'));
+  SELECT RAISE(ABORT, 'employee: an imported employee must start with pin_must_change = 1')
+   WHERE NEW.legacy_id IS NOT NULL AND NEW.pin_must_change IS NOT 1;
 END;
 CREATE TRIGGER employee_ai AFTER INSERT ON employee BEGIN
   INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json, reason)
@@ -557,6 +591,8 @@ CREATE TRIGGER import_batch_bu BEFORE UPDATE ON import_batch BEGIN
   SELECT RAISE(ABORT, 'import_batch: raw row counts do not match the manifest')
    WHERE (SELECT count(*) FROM legacy_employee_raw WHERE import_batch_id = OLD.id) <> OLD.manifest_employee_rows
       OR (SELECT count(*) FROM legacy_shift_raw WHERE import_batch_id = OLD.id) <> OLD.manifest_shift_rows;
+  SELECT RAISE(ABORT, 'import_batch: a raw row has neither its imported result nor a SKIPPED issue')
+   WHERE EXISTS (SELECT 1 FROM import_unreconciled_v WHERE import_batch_id = OLD.id);
 END;
 CREATE TRIGGER import_batch_au AFTER UPDATE ON import_batch BEGIN
   INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json, reason)
@@ -671,6 +707,13 @@ CREATE TRIGGER punch_bi BEFORE INSERT ON punch BEGIN
                         AND v.legacy_employee_id = (SELECT legacy_id FROM employee WHERE id = NEW.employee_id)
                         AND strftime('%Y-%m-%dT%H:%M:%f', NEW.occurred_utc, NEW.utc_offset_minutes || ' minutes')
                             IN (v.wall_local, v.wall_local_dst_shifted));
+  -- A fall-back wall time occurs twice; section 9 takes the earlier, daylight occurrence.
+  -- The later one is recognisable: one hour before it the same wall time already happened.
+  SELECT RAISE(ABORT, 'punch: ambiguous local time must use the earlier (daylight) occurrence')
+   WHERE NEW.source = 'legacy_import'
+     AND pc_utc_offset((SELECT source_time_zone_id FROM import_batch WHERE id = NEW.import_batch_id),
+                       strftime('%Y-%m-%dT%H:%M:%fZ', NEW.occurred_utc, '-60 minutes'))
+         IS NEW.utc_offset_minutes + 60;
 END;
 CREATE TRIGGER punch_ai AFTER INSERT ON punch BEGIN
   INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json, reason)
@@ -889,7 +932,7 @@ SELECT NULL, 'import_batch', b.id, 'closed batch does not reconcile with its man
    AND ((SELECT count(*) FROM legacy_employee_raw WHERE import_batch_id = b.id) <> b.manifest_employee_rows
      OR (SELECT count(*) FROM legacy_shift_raw WHERE import_batch_id = b.id) <> b.manifest_shift_rows);
 
--- Admission rules for payroll records, re-derived from the stored rows and their INSERT
+-- Admission rules for payroll and import records, re-derived from the stored rows and their INSERT
 -- events. A BEFORE trigger can be dropped for one statement and recreated identically,
 -- which the fingerprint cannot see; the data it let in still breaks these rules. Actor
 -- state, the site zone and batch state are read as of the event, from the log itself.
@@ -966,6 +1009,24 @@ SELECT 'punch', id, 'import punch does not match its raw legacy shift'
                       AND v.legacy_employee_id = json_extract(pe.employee_then, '$.legacy_id')
                       AND strftime('%Y-%m-%dT%H:%M:%f', pe.occurred_utc, pe.utc_offset_minutes || ' minutes')
                           IN (v.wall_local, v.wall_local_dst_shifted))
+UNION ALL
+SELECT 'punch', id, 'import punch took the later occurrence of an ambiguous local time'
+  FROM pe
+ WHERE source = 'legacy_import'
+   AND pc_utc_offset((SELECT source_time_zone_id FROM import_batch WHERE id = pe.import_batch_id),
+                     strftime('%Y-%m-%dT%H:%M:%fZ', occurred_utc, '-60 minutes'))
+       IS utc_offset_minutes + 60
+UNION ALL
+SELECT 'employee', a.row_id, 'imported employee created without a forced PIN reset'
+  FROM audit_log a
+ WHERE a.table_name = 'employee' AND a.action = 'INSERT'
+   AND json_extract(a.after_json, '$.legacy_id') IS NOT NULL
+   AND json_extract(a.after_json, '$.pin_must_change') IS NOT 1
+UNION ALL
+SELECT 'import_batch', b.id, 'closed batch has unreconciled raw rows'
+  FROM import_batch b
+ WHERE b.completed_utc IS NOT NULL
+   AND EXISTS (SELECT 1 FROM import_unreconciled_v u WHERE u.import_batch_id = b.id)
 UNION ALL
 SELECT 'punch_correction', id, 'correction actor is not the user who made it'
   FROM ce WHERE NOT (actor_kind = 'user' AND actor_id = actor_user_id)
