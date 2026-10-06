@@ -1,0 +1,148 @@
+name: Release
+
+# Pushing a v2+ tag (git tag v2.0.0 && git push origin v2.0.0) builds the Windows
+# installer and attaches it to a DRAFT GitHub release; publish the draft by hand
+# after checking it. Pull requests that touch packaging build the installer as a
+# workflow artifact only, so a broken installer is caught before a tag exists.
+on:
+  push:
+    tags: ["v[2-9].*", "v[1-9][0-9]*.*"]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "installer/**"
+      - "src/PunchClock.Import/**"
+      - "migration/legacy-export/run-export.cmd"
+      - "migration/legacy-export/Export-LegacyData.ps1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: windows-latest
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      RID: win-x64
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $version = ([xml](Get-Content src/Directory.Build.props)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          if (-not $version) { throw 'No <Version> in src/Directory.Build.props' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match <Version>$version</Version> in src/Directory.Build.props. Bump the version, commit, then tag."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Packaging PunchClock $version"
+
+      - name: Test
+        run: dotnet test --solution PunchClock.Modern.sln --configuration Release
+
+      - name: Publish app and importer
+        shell: pwsh
+        run: |
+          $common = @('--configuration', 'Release', '--runtime', $env:RID, '--self-contained', 'true', '-p:DebugType=none')
+          dotnet publish src/PunchClock.App/PunchClock.App.csproj @common --output publish/app
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          dotnet publish src/PunchClock.Import/PunchClock.Import.csproj @common --output publish/migration
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Bundle the legacy exporter
+        shell: pwsh
+        run: |
+          $files = 'migration/legacy-export/run-export.cmd', 'migration/legacy-export/Export-LegacyData.ps1'
+          $missing = $files | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            # A release without the exporter cannot migrate anyone; only untagged builds may skip it.
+            if ($env:GITHUB_REF_TYPE -eq 'tag') { throw "Missing $($missing -join ', ')" }
+            Write-Warning "Exporter not on this branch yet ($($missing -join ', ')); the installer will omit it."
+            exit 0
+          }
+          New-Item -ItemType Directory -Force publish/migration/export | Out-Null
+          Copy-Item $files publish/migration/export/
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { choco install innosetup --yes --no-progress; if ($LASTEXITCODE) { exit $LASTEXITCODE } }
+          if (-not (Test-Path $iscc)) { throw 'ISCC.exe not found after install' }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & $env:ISCC "/DAppVersion=$v" "/DPublishDir=$PWD\publish" "/DOutputDir=$PWD\dist" installer\PunchClock.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Push-Location dist
+          Get-ChildItem -File | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)"
+          } | Set-Content -Encoding ascii SHA256SUMS.txt
+          Pop-Location
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Smoke-test the importer
+        shell: pwsh
+        run: |
+          # The published, self-contained importer must start and reject a bad argument on a clean runner.
+          & publish\migration\PunchClock.Import.exe check
+          if ($LASTEXITCODE -ne 1) { throw "Expected usage error (1), got $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PunchClock-${{ steps.version.outputs.version }}-windows
+          path: dist
+          if-no-files-found: error
+
+  release:
+    needs: package
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: PunchClock-${{ needs.package.outputs.version }}-windows
+          path: dist
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          cat > notes.md <<EOF
+          PunchClock $VERSION for Windows 10/11 (64-bit).
+
+          **Moving from the old PunchClock app (v1.x)?** Follow [the switchover steps in the README](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/README.md#moving-from-the-old-punchclock-app) before anyone punches in the new app.
+
+          | File | Use |
+          |---|---|
+          | \`PunchClock-Setup-$VERSION.exe\` | Installer. Includes the export and import tools for the switchover. |
+          | \`SHA256SUMS.txt\` | Checksum of the installer. |
+
+          The installer is not code-signed yet, so Windows SmartScreen asks for confirmation: click **More info**, then **Run anyway**.
+          EOF
+          gh release create "$TAG" dist/* --draft --verify-tag --title "PunchClock $VERSION" --notes-file notes.md
