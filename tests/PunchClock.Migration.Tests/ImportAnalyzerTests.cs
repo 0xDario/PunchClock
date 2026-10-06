@@ -212,6 +212,18 @@ public sealed class ImportAnalyzerTests : IDisposable
     }
 
     [Fact]
+    public void Old_report_hours_count_minute_boundaries_like_access_datediff()
+    {
+        Assert.Equal(TimeSpan.FromMinutes(10), ReconciliationTotals.AccessDateDiffMinutes(
+            new DateTime(2025, 1, 6, 8, 0, 30), new DateTime(2025, 1, 6, 8, 10, 20)));
+        // 08:00:59.6 rounds to 08:01:00 first.
+        Assert.Equal(TimeSpan.FromMinutes(9), ReconciliationTotals.AccessDateDiffMinutes(
+            new DateTime(2025, 1, 6, 8, 0, 59, 600), new DateTime(2025, 1, 6, 8, 10, 20)));
+        Assert.Equal(TimeSpan.FromMinutes(-60), ReconciliationTotals.AccessDateDiffMinutes(
+            new DateTime(2025, 1, 6, 8, 0, 0), new DateTime(2025, 1, 6, 7, 0, 0)));
+    }
+
+    [Fact]
     public void Writes_a_plain_text_report_and_reconciliation_csvs()
     {
         _export.Employee(1, "Ann", "Lee")
