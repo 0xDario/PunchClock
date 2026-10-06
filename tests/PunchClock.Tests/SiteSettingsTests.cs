@@ -10,6 +10,20 @@ public sealed class SiteSettingsTests : DatabaseTest
     // A fresh install: the zone is UNSET until an admin chooses one.
     protected override string? SiteZone => null;
 
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    [InlineData(DateTimeKind.Utc)]
+    public void Site_date_range_uses_only_the_calendar_date(DateTimeKind kind)
+    {
+        // A date picker returns Local dates; off-UTC machines used to throw building the range.
+        var (fromUtc, toUtc) = SiteTime.CoveringUtcRange(
+            DateTime.SpecifyKind(new DateTime(2026, 10, 1, 15, 0, 0), kind), DateTime.SpecifyKind(new DateTime(2026, 10, 6), kind));
+
+        Assert.Equal(new DateTimeOffset(2026, 9, 30, 0, 0, 0, TimeSpan.Zero), fromUtc);
+        Assert.Equal(new DateTimeOffset(2026, 10, 8, 0, 0, 0, TimeSpan.Zero), toUtc);
+    }
+
     [Fact]
     public async Task Punches_are_refused_until_an_admin_sets_the_zone()
     {

@@ -3,6 +3,9 @@
 ###############################################################################
 * text=auto
 
+# Migration scripts are stored in sqlite_schema exactly as executed: keep them LF everywhere.
+*.sql text eol=lf
+
 ###############################################################################
 # Set default behavior for command prompt diff.
 #

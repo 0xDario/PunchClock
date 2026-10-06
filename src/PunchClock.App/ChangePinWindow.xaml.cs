@@ -49,9 +49,15 @@ public partial class ChangePinWindow : Window
                 return;
             }
 
-            Error.Text = result == PinChangeResult.TooManyAttempts
-                ? $"Too many incorrect PINs. Try again in {PinPolicy.LockoutWindow.TotalMinutes:0} minutes or ask a manager."
-                : "The PIN could not be changed. Ask a manager.";
+            Error.Text = result switch
+            {
+                PinChangeResult.TooManyAttempts =>
+                    $"Too many incorrect PINs. Try again in {PinPolicy.LockoutWindow.TotalMinutes:0} minutes or ask a manager.",
+                PinChangeResult.NewPinRejected => newPin == _currentPin
+                    ? "Choose a PIN different from your current one."
+                    : PinPolicy.Validate(newPin) ?? "That PIN is not allowed. Choose another.",
+                _ => "The PIN could not be changed. Ask a manager.",
+            };
         }
         catch (Exception ex)
         {
