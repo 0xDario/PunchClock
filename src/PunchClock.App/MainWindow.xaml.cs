@@ -34,11 +34,15 @@ public partial class MainWindow : Window
 
         var result = await _viewModel.PunchAsync(direction, pin);
 
-        // Imported employees' legacy PINs were stored in plain text: the punch counts, then
-        // the employee is asked to choose a new PIN.
-        if (result is { Accepted: true, PinMustChange: true } && employee is not null)
+        // Imported employees' legacy PINs were stored in plain text, so they are refused until
+        // replaced. A new PIN completes the punch they asked for; cancelling records nothing.
+        if (result is { Rejection: PunchRejection.PinChangeRequired } && employee is not null)
         {
-            new ChangePinWindow(_services.Employees, employee.Id, pin) { Owner = this }.ShowDialog();
+            var change = new ChangePinWindow(_services.Employees, employee.Id, pin) { Owner = this };
+            if (change.ShowDialog() == true && change.ChosenPin is { } newPin)
+            {
+                await _viewModel.PunchAsync(direction, newPin);
+            }
         }
     }
 
