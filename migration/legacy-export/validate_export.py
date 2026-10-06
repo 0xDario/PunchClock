@@ -30,6 +30,9 @@ import zipfile
 OA_EPOCH = dt.datetime(1899, 12, 30)
 MS_PER_DAY = 86_400_000
 LONG_SHIFT = dt.timedelta(hours=16)
+# NewStaffForm inserts the dummy shift with two separate DateTime.Now calls, so it can be a few ms long.
+NEAR_ZERO = dt.timedelta(seconds=1)
+REQUIRED_TABLES = ("Employee", "Shift")
 
 
 # --- parsing -----------------------------------------------------------------
@@ -171,8 +174,13 @@ def check_integrity(ex, rep):
         if sha256(ex.dir / snap) != src.get("sha256"):
             rep.fail("snapshot hash differs from the source hash in the manifest")
     elif snap:
-        rep.add(f"- Snapshot `{snap}` not included in this copy of the export.")
+        # Without the snapshot the CSVs cannot be tied back to the hashed source bytes.
+        rep.fail(f"snapshot {snap} named in the manifest is missing")
 
+    names = {t["name"] for t in m["tables"]}
+    for name in REQUIRED_TABLES:
+        if name not in names:
+            rep.fail(f"{name} table missing from export {ex.dir}")
     for t in m["tables"]:
         check_table(ex, t, rep)
 
@@ -197,13 +205,15 @@ def check_table(ex, t, rep):
         rep.fail(f"{name}: CSV is empty (no header)")
         return
     header, body = rows[0], rows[1:]
-    ex.tables[name] = (header, body)
     if header != t["columns"]:
         rep.fail(f"{name}: header {header} != manifest columns {t['columns']}")
+        return
     for k, r in enumerate(body, 2):
         if len(r) != len(header):
             rep.fail(f"{name}: line {k} has {len(r)} fields, header has {len(header)}")
             return
+    # Only structurally sound tables reach the cross-check and data-quality analysis.
+    ex.tables[name] = (header, body)
     if len(body) != t["row_count"]:
         rep.fail(f"{name}: {len(body)} rows in CSV, manifest says {t['row_count']}")
 
@@ -295,6 +305,10 @@ def col(header, row, name):
     return row[lower.index(name.lower())] if name.lower() in lower else None
 
 
+def is_near_zero(shift):
+    return shift[3] is not None and dt.timedelta(0) <= shift[3] - shift[2] < NEAR_ZERO
+
+
 def quality(ex, site_tz, rep):
     if "Employee" not in ex.tables or "Shift" not in ex.tables:
         return
@@ -361,8 +375,15 @@ def quality(ex, site_tz, rep):
     if orphans:
         rep.add(f"- Orphan shifts (EmployeeID not in Employee): {sum(orphans.values())} rows, "
                 f"EmployeeID {dict(sorted(orphans.items()))}")
-    dummy = [s[0] for s in shifts if s[3] is not None and s[3] == s[2]]
-    rep.add(f"- Zero-length shifts (TimeIn = TimeOut, the new-employee dummy row or a double punch): {len(dummy)}")
+    first_shift = {}
+    for s in shifts:
+        if s[1] not in first_shift or s[0] < first_shift[s[1]]:
+            first_shift[s[1]] = s[0]
+    dummy = [s[0] for s in shifts if is_near_zero(s)]
+    exact = sum(1 for s in shifts if s[3] is not None and s[3] == s[2])
+    initial = sum(1 for sid in dummy if sid in first_shift.values())
+    rep.add(f"- Zero-length or under-1 s shifts: {len(dummy)} ({exact} exactly zero; {initial} are the "
+            "employee's first shift, i.e. the new-employee dummy row; the rest look like double punches)")
     negative = [s[0] for s in shifts if s[3] is not None and s[3] < s[2]]
     if negative:
         rep.add(f"- TimeOut before TimeIn: ShiftID {negative}")
@@ -381,17 +402,21 @@ def quality(ex, site_tz, rep):
         open_rows += opens
         if len(opens) > 1:
             multi_open.append((emp, opens))
-        # The legacy app derives punch state from the highest ShiftID only.
-        if opens and opens[-1] != ss[-1][0]:
-            stale_open.append((emp, [o for o in opens if o != ss[-1][0]]))
+        # The legacy app only ever closes the highest ShiftID, so every other open row is stuck.
+        stuck = [o for o in opens if o != ss[-1][0]]
+        if stuck:
+            stale_open.append((emp, stuck))
         for prev, cur in zip(ss, ss[1:]):
             if cur[2] < prev[2]:
                 inversions.append((prev[0], cur[0]))
-        by_time = sorted(ss, key=lambda s: s[2])
-        for prev, cur in zip(by_time, by_time[1:]):
-            end = prev[3]
-            if end is not None and cur[2] < end:
-                overlaps.append((prev[0], cur[0]))
+        # Compare each shift with the latest-ending earlier shift, so a long shift
+        # containing several short ones reports every contained shift.
+        latest = None  # (end, ShiftID)
+        for cur in sorted(ss, key=lambda s: s[2]):
+            if latest is not None and cur[2] < latest[0]:
+                overlaps.append((latest[1], cur[0]))
+            if cur[3] is not None and (latest is None or cur[3] > latest[0]):
+                latest = (cur[3], cur[0])
     rep.add(f"- Open shifts (TimeOut NULL): {len(open_rows)}" + (f", ShiftID {open_rows[:20]}" if open_rows else ""))
     if multi_open:
         rep.add(f"- Employees with more than one open shift: {multi_open}")
@@ -423,7 +448,7 @@ def quality(ex, site_tz, rep):
                 f"`{ex.manifest.get('site_time_zone', {}).get('id', 'unknown')}`).")
     rep.add()
 
-    rep.add("### Hours per employee (closed shifts, zero-length excluded)")
+    rep.add("### Hours per employee (closed shifts, under-1 s shifts excluded)")
     rep.add()
     rep.add("| EmployeeID | Name | Shifts | Open | Hours | First TimeIn | Last TimeIn |")
     rep.add("|---:|---|---:|---:|---:|---|---|")
@@ -431,7 +456,7 @@ def quality(ex, site_tz, rep):
         ss = by_emp[emp]
         r = employees.get(emp)
         nm = f"{col(eh, r, 'FirstName') or ''} {col(eh, r, 'LastName') or ''}".strip() if r else "(orphan)"
-        closed = [s for s in ss if s[3] is not None and s[3] > s[2]]
+        closed = [s for s in ss if s[3] is not None and s[3] > s[2] and not is_near_zero(s)]
         total = sum(hours(s[3] - s[2]) for s in closed)
         rep.add(f"| {emp} | {nm} | {len(ss)} | {sum(1 for s in ss if s[3] is None)} | {total:.2f} | "
                 f"{fmt_iso(min(s[2] for s in ss))} | {fmt_iso(max(s[2] for s in ss))} |")

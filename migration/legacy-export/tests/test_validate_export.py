@@ -22,6 +22,14 @@ SHIFT = [  # ShiftID, EmployeeID, TimeIn, TimeOut
     (13, 9, "2021-03-15T08:00:00.000", None),                        # orphan, open
     (14, 2, "2021-03-16T08:00:00.000", "2021-03-17T08:00:00.000"),  # 24 h
 ]
+EXTRA_SHIFTS = [  # added by tests that need them; manifest totals are recomputed
+    (20, 3, "2022-01-03T09:00:00.000", "2022-01-03T09:00:00.004"),  # dummy split across two DateTime.Now calls
+    (21, 1, "2022-02-01T08:00:00.000", "2022-02-01T17:00:00.000"),
+    (22, 1, "2022-02-01T09:00:00.000", "2022-02-01T10:00:00.000"),  # inside 21
+    (23, 1, "2022-02-01T11:00:00.000", "2022-02-01T12:00:00.000"),  # inside 21, not adjacent to it
+    (24, 3, "2022-03-01T08:00:00.000", None),                        # stuck: 25 is also open and higher
+    (25, 3, "2022-03-02T08:00:00.000", None),
+]
 
 
 def oadate(iso):
@@ -36,11 +44,11 @@ def field(x):
     return '"' + s.replace('"', '""') + '"' if any(c in s for c in ',"\r\n') or s == "" else s
 
 
-def write_export(root):
+def write_export(root, shifts=SHIFT):
     root.mkdir(parents=True, exist_ok=True)
     emp = ["EmployeeID,FirstName,LastName,PinCode,IsActive"] + [",".join(field(x) for x in r) for r in EMPLOYEE]
     sh = ["ShiftID,EmployeeID,TimeIn,TimeIn_OADate,TimeOut,TimeOut_OADate"] + [
-        ",".join(field(x) for x in (s, e, i, oadate(i), o, oadate(o) if o else None)) for s, e, i, o in SHIFT]
+        ",".join(field(x) for x in (s, e, i, oadate(i), o, oadate(o) if o else None)) for s, e, i, o in shifts]
     (root / "Employee.csv").write_bytes(("\r\n".join(emp) + "\r\n").encode())
     (root / "Shift.csv").write_bytes(("\r\n".join(sh) + "\r\n").encode())
     (root / "source").mkdir(exist_ok=True)
@@ -57,13 +65,15 @@ def write_export(root):
              "control_totals": {"EmployeeID": {"non_null": 3, "sum": "6"}, "FirstName": {"non_null": 3},
                                 "LastName": {"non_null": 3}, "PinCode": {"non_null": 3, "sum": "2480"},
                                 "IsActive": {"non_null": 3, "sum": "2"}}},
-            {"name": "Shift", "file": "Shift.csv", "row_count": 5, "primary_key": "ShiftID",
-             "min_id": 10, "max_id": 14, "columns": sh[0].split(","), "sha256": sha("Shift.csv"),
-             "control_totals": {"ShiftID": {"non_null": 5, "sum": "60"}, "EmployeeID": {"non_null": 5, "sum": "15"},
-                                "TimeIn": {"non_null": 5, "min": "2021-03-14T02:30:00.000",
-                                           "max": "2021-11-07T01:30:00.000"},
-                                "TimeOut": {"non_null": 4, "min": "2021-03-14T02:30:00.000",
-                                            "max": "2021-11-07T09:00:00.000"}}},
+            {"name": "Shift", "file": "Shift.csv", "row_count": len(shifts), "primary_key": "ShiftID",
+             "min_id": min(x[0] for x in shifts), "max_id": max(x[0] for x in shifts),
+             "columns": sh[0].split(","), "sha256": sha("Shift.csv"),
+             "control_totals": {
+                 "ShiftID": {"non_null": len(shifts), "sum": str(sum(x[0] for x in shifts))},
+                 "EmployeeID": {"non_null": len(shifts), "sum": str(sum(x[1] for x in shifts))},
+                 "TimeIn": {"non_null": len(shifts), "min": min(x[2] for x in shifts), "max": max(x[2] for x in shifts)},
+                 "TimeOut": {"non_null": sum(1 for x in shifts if x[3]), "min": min(x[3] for x in shifts if x[3]),
+                             "max": max(x[3] for x in shifts if x[3])}}},
         ],
         "warnings": [], "failures": [],
     }
@@ -93,7 +103,7 @@ class ValidateExportTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("PASS", out)
         self.assertIn("Orphan shifts (EmployeeID not in Employee): 1 rows", out)
-        self.assertIn("Zero-length shifts", out)
+        self.assertIn("Zero-length or under-1 s shifts: 1 (1 exactly zero; 1 are", out)
         self.assertIn("PIN under 3 digits", out)
         self.assertIn("Employees sharing a PIN: [[1, 3]]", out)
         self.assertIn("Shifts over 16 h", out)
@@ -130,6 +140,39 @@ class ValidateExportTest(unittest.TestCase):
         rc, out = run(self.root, "--compare", other)
         self.assertEqual(rc, 0, out)
         self.assertIn("Shift: byte-identical (5 rows)", out)
+
+    def test_lock_file_overlap_and_dummy_findings(self):
+        root = write_export(pathlib.Path(self.tmp.name) / "extra", SHIFT + EXTRA_SHIFTS)
+        rc, out = run(root)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Zero-length or under-1 s shifts: 2 (1 exactly zero; 2 are the employee's first shift", out)
+        self.assertIn("Overlapping shifts for the same employee: 2, e.g. [(21, 22), (21, 23)]", out)
+        self.assertIn("never close (not the employee's last ShiftID): [(3, [24])]", out)
+
+    def test_missing_snapshot_fails(self):
+        (self.root / "source" / "PunchClock.accdb").unlink()
+        sums = self.root / "SHA256SUMS.txt"
+        sums.write_text("".join(l + "\n" for l in sums.read_text().splitlines() if "source/" not in l))
+        rc, out = run(self.root)
+        self.assertEqual(rc, 1)
+        self.assertIn("snapshot source/PunchClock.accdb named in the manifest is missing", out)
+
+    def test_compare_requires_core_tables(self):
+        other = write_export(pathlib.Path(self.tmp.name) / "other")
+        m = json.loads((other / "manifest.json").read_text())
+        m["tables"] = [t for t in m["tables"] if t["name"] != "Shift"]
+        (other / "manifest.json").write_text(json.dumps(m))
+        rc, out = run(self.root, "--compare", other)
+        self.assertEqual(rc, 1)
+        self.assertIn("Shift table missing from export", out)
+
+    def test_broken_structure_reports_instead_of_crashing(self):
+        p = self.root / "Employee.csv"
+        p.write_bytes(p.read_bytes().replace(b",IsActive\r\n", b"\r\n", 1))
+        rc, out = run(self.root)
+        self.assertEqual(rc, 1)
+        self.assertIn("Employee: header", out)
+        self.assertNotIn("Traceback", out)
 
     def test_csv_parser_null_vs_empty(self):
         self.assertEqual(v.parse_csv('a,,"",""""\r\n"x\r\ny",1\r\n'), [["a", None, "", '"'], ["x\r\ny", "1"]])

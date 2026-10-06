@@ -230,7 +230,9 @@ if (-not $Source) {
 }
 if (-not $Source -or -not (Test-Path -LiteralPath $Source -PathType Leaf)) { Exit-WithError 2 "Database file not found: '$Source'" }
 $sourceItem = Get-Item -LiteralPath $Source
-$lockFile = [IO.Path]::ChangeExtension($sourceItem.FullName, '.laccdb')
+# Access names the lock .ldb for .mdb files and .laccdb for .accdb files.
+$lockExt = if ($sourceItem.Extension -eq '.mdb') { '.ldb' } else { '.laccdb' }
+$lockFile = [IO.Path]::ChangeExtension($sourceItem.FullName, $lockExt)
 if ((Test-Path -LiteralPath $lockFile) -and -not $Force) {
     Exit-WithError 5 ("The database is open ($lockFile exists). Close PunchClock and Access on every machine " +
         'that uses this file, then run again. Use -Force only if the lock file is known to be stale.')
@@ -448,7 +450,7 @@ finally {
 }
 
 # --- Prove nothing was written, then the manifest ------------------------------------
-$lock = [IO.Path]::ChangeExtension($snapshot, '.laccdb')
+$lock = [IO.Path]::ChangeExtension($snapshot, $lockExt)
 if (Test-Path -LiteralPath $lock) { Remove-Item -LiteralPath $lock -ErrorAction SilentlyContinue }
 if ((Get-Sha256 $snapshot) -ne $sourceHash) { $failures.Add('The snapshot changed during the export.') }
 if ((Get-Sha256 $sourceItem.FullName) -ne $sourceHash) {
