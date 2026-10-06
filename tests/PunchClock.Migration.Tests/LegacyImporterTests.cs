@@ -70,7 +70,7 @@ public sealed class LegacyImporterTests : IAsyncLifetime
         // The import's own audit event carries the source hash and the manifest counts.
         var batchEvent = (string)(await _db.ScalarAsync(
             "SELECT after_json FROM audit_log WHERE table_name = 'import_batch' AND action = 'INSERT'"))!;
-        Assert.Contains(new string('a', 64), batchEvent);
+        Assert.Contains(_export.SourceSha256, batchEvent);
         Assert.Contains("\"manifest_shift_rows\":5", batchEvent.Replace(" ", ""));
         Assert.Equal(2L, await _db.ScalarAsync("SELECT DISTINCT actor_id FROM audit_log WHERE table_name = 'punch'"));
         Assert.Equal(0L, await _db.ScalarAsync("SELECT count(*) FROM verify_chain_v"));
@@ -177,6 +177,19 @@ public sealed class LegacyImporterTests : IAsyncLifetime
         var ex = await Assert.ThrowsAsync<ImportRefusedException>(() => Importer().ImportAsync(plan, _db.Database));
 
         Assert.Contains("61", ex.Message);
+        Assert.Equal(0L, await _db.ScalarAsync("SELECT count(*) FROM import_batch"));
+    }
+
+    [Fact]
+    public async Task Refuses_an_export_without_its_access_snapshot()
+    {
+        _export.WithSnapshot = false;
+        var plan = Plan();
+        Assert.Contains(plan.Findings, f => f.Code == FindingCode.SnapshotMissing);
+
+        var ex = await Assert.ThrowsAsync<ImportRefusedException>(() => Importer().ImportAsync(plan, _db.Database));
+
+        Assert.Contains("PunchClock.accdb", ex.Message);
         Assert.Equal(0L, await _db.ScalarAsync("SELECT count(*) FROM import_batch"));
     }
 

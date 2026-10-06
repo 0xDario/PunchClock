@@ -40,6 +40,12 @@ public sealed class LegacyImporter
 
         await CheckTargetAsync(connection, tx, plan.TimeZone, ct);
 
+        // source_sha256 is the batch's proof of which Access file the history came from; never record it unchecked.
+        if (!plan.Export.SnapshotVerified)
+            throw new ImportRefusedException(
+                "The export folder has no copy of PunchClock.accdb matching manifest.json, so the source file's hash cannot be checked. " +
+                "Use the complete export folder or zip, or export again.");
+
         // migration_issue has no code for these yet, so they can be neither skipped nor stored.
         var future = plan.Findings.Where(f => f.Code == FindingCode.FutureTime).Select(f => f.LegacyId).ToList();
         if (future.Count > 0)

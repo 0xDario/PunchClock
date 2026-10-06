@@ -12,11 +12,15 @@ public static class ImportAnalyzer
 {
     public static readonly TimeSpan LongShiftThreshold = TimeSpan.FromHours(16);
 
-    /// <summary>
-    /// NewStaffForm read DateTime.Now twice, so its dummy row can end a few ms after it
-    /// starts. Same bound as the exporter's validator (PR #4): 0 to under 1 s.
-    /// </summary>
+    /// <summary>Shifts from 0 to under 1 s are zero-length, as in the exporter's validator (PR #4).</summary>
     public static readonly TimeSpan ZeroLengthBound = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// NewStaffForm read DateTime.Now twice for its dummy row, so it can end a few ms after it
+    /// starts, or a whole second later when the reads straddle a second and Access drops the
+    /// fraction. An employee's first shift under 2 s is that dummy; no real shift is that short.
+    /// </summary>
+    public static readonly TimeSpan DummyBound = TimeSpan.FromSeconds(2);
 
     /// <param name="nowUtc">The import clock; times after it cannot be stored. Defaults to now.</param>
     public static ImportPlan Analyze(LegacyExport export, TimeZoneInfo timeZone, DateTime? nowUtc = null)
@@ -99,11 +103,13 @@ public static class ImportAnalyzer
                 continue;
             }
 
-            if (s.TimeOut is { } tout && tout >= tin && tout - tin < ZeroLengthBound)
+            if (s.TimeOut is { } tout && tout >= tin)
             {
                 // The old app's NewStaffForm wrote one of these for every new employee.
                 var isFirst = d.Employee is not null && !export.Shifts.Any(o => o.EmployeeId == s.EmployeeId && o.ShiftId < s.ShiftId);
-                Flag(d, isFirst ? FindingCode.DummyShift : FindingCode.ZeroLengthShift, $"At {Fmt(tin)}. Counts as 0 hours either way.");
+                if (tout - tin < (isFirst ? DummyBound : ZeroLengthBound))
+                    Flag(d, isFirst ? FindingCode.DummyShift : FindingCode.ZeroLengthShift,
+                        $"{Fmt(tin)} to {Fmt(tout)}. Counts as 0 hours either way.");
             }
 
             if (d.Flags.Any(FindingInfo.Skips))

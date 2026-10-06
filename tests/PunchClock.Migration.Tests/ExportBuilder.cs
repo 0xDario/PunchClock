@@ -29,6 +29,11 @@ public sealed class ExportBuilder : IDisposable
 
     public bool WithControlTotals { get; set; } = true;
 
+    /// <summary>Write source/PunchClock.accdb and put its hash in the manifest, as the exporter does.</summary>
+    public bool WithSnapshot { get; set; } = true;
+
+    public string SourceSha256 { get; private set; } = new('a', 64);
+
     public string? SiteTimeZone { get; set; } = "America/Toronto";
 
     public string Tool { get; set; } = "ps-Export-LegacyData/2";
@@ -92,6 +97,15 @@ public sealed class ExportBuilder : IDisposable
             ["TimeOut"] = DateTotals(outs),
         };
 
+        if (WithSnapshot)
+        {
+            var snapshot = Path.Combine(Folder, "source", "PunchClock.accdb");
+            Directory.CreateDirectory(Path.GetDirectoryName(snapshot)!);
+            var bytes = Encoding.UTF8.GetBytes("not a real Access file " + Folder);
+            File.WriteAllBytes(snapshot, bytes);
+            SourceSha256 = Convert.ToHexStringLower(SHA256.HashData(bytes));
+        }
+
         var manifest = new JsonObject
         {
             ["tool"] = Tool,
@@ -100,7 +114,7 @@ public sealed class ExportBuilder : IDisposable
             {
                 ["path"] = @"C:\PunchClock\PunchClock.accdb",
                 ["size_bytes"] = 1466368,
-                ["sha256"] = new string('a', 64),
+                ["sha256"] = SourceSha256,
                 ["snapshot"] = "source/PunchClock.accdb",
             },
             ["tables"] = new JsonArray(

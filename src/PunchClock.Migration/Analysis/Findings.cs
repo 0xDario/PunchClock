@@ -65,14 +65,13 @@ public static class FindingInfo
         FindingCode.DummyShift or
         FindingCode.OpenShiftCurrent or
         FindingCode.NoShifts or
-        FindingCode.IsActiveColumnMissing or
-        FindingCode.SnapshotMissing => FindingLevel.Info,
+        FindingCode.IsActiveColumnMissing => FindingLevel.Info,
         _ => FindingLevel.Review,
     };
 
     public static string Describe(FindingCode code) => code switch
     {
-        FindingCode.DummyShift => "Skipped: zero-length (under 1 s) shift the old app created with each new employee",
+        FindingCode.DummyShift => "Skipped: zero-length (under 2 s) first shift the old app created with each new employee",
         FindingCode.ZeroLengthShift => "Skipped: zero-length shift (punch in and out within 1 s)",
         FindingCode.OpenShiftCurrent => "Employee is punched in right now (highest-ID shift has no punch out)",
         FindingCode.OpenShiftStale => "Missed punch out: shift never closed, later shifts exist",
@@ -96,7 +95,7 @@ public static class FindingInfo
         FindingCode.PunchStateDiffers => "New app will show a different punched in/out state than the old app",
         FindingCode.IsActiveColumnMissing => "Export has no IsActive column (data predates Oct 2023); everyone imported as active",
         FindingCode.UnmappedColumn => "Export has a column the importer does not map",
-        FindingCode.SnapshotMissing => "The .accdb snapshot is not in the export folder, so its hash could not be re-checked",
+        FindingCode.SnapshotMissing => "The .accdb snapshot is not in the export folder, so its hash cannot be checked; the import refuses to run",
         _ => code.ToString(),
     };
 
