@@ -19,7 +19,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCHEMA = open(os.path.join(HERE, "schema.sql"), encoding="utf-8").read()
 GENESIS = "0" * 64
-VERIFY_VIEWS = ("verify_chain_v", "verify_drift_v", "verify_continuity_v")
+VERIFY_VIEWS = ("verify_chain_v", "verify_drift_v", "verify_continuity_v", "verify_history_v")
 
 failures = 0
 
@@ -227,6 +227,8 @@ def main():
     # --- Employee self-service and deletes ---------------------------------------------
     s.act("employee", ben).x("UPDATE employee SET pin_hash = 'pbkdf2-sha256$b2' WHERE id = ?", (ben,))
     check("employee changes own PIN", s.one("SELECT pin_hash FROM employee WHERE id = ?", (ben,))[0].endswith("b2"))
+    s.blocked("employee self-service must change the PIN",
+              "UPDATE employee SET pin_must_change = 0 WHERE id = ?", (ben,), "not authorized")
     s.blocked("employee cannot rename self", "UPDATE employee SET last_name = 'X' WHERE id = ?", (ben,), "not authorized")
     s.blocked("employee cannot change another PIN", "UPDATE employee SET pin_hash = 'h' WHERE id = ?", (ana,), "not authorized")
     check("PIN hash never enters the log",
@@ -291,6 +293,19 @@ def main():
                                  " VALUES (?, 'IN', '2023-03-03T14:00:00.000Z', -300, 'legacy_import', ?, 43)", (old, batch), "migration account")
     s.x("UPDATE app_user SET is_active = 0 WHERE id = 2")
     check("migration account can be retired after import", s.one("SELECT is_active FROM app_user WHERE id = 2")[0] == 0)
+    s.act("employee", old).blocked("PIN reset flag cannot be cleared without a new PIN",
+                                   "UPDATE employee SET pin_must_change = 0 WHERE id = ?", (old,), "not authorized")
+    s.x("UPDATE employee SET pin_hash = 'pbkdf2-sha256$new', pin_must_change = 0 WHERE id = ?", (old,))
+    check("PIN reset completes with a new PIN", s.one("SELECT pin_must_change FROM employee WHERE id = ?", (old,))[0] == 0)
+    s.act("user", 1).x("UPDATE app_user SET employee_id = ? WHERE id = ?", (old, admin))
+    s.act("user", admin).blocked("admin cannot unlink own employee record",
+                                 "UPDATE app_user SET employee_id = NULL WHERE id = ?", (admin,), "own employee link")
+    s.blocked("admin cannot correct own punches",
+              "INSERT INTO punch_correction (action, employee_id, new_direction, new_occurred_utc, new_utc_offset_minutes, reason, actor_user_id)"
+              " VALUES ('add', ?, 'OUT', '2023-03-03T22:00:00.000Z', -300, 'adding my own missed punch', ?)", (old, admin), "own punches")
+    s.act("user", mgr).blocked("caller-supplied created_utc rejected",
+                               "INSERT INTO employee (first_name, last_name, pin_hash, created_utc) VALUES ('Back', 'Dated', 'h', '2020-01-01T00:00:00.000Z')",
+                               (), "database clock")
 
     # --- Verifier on the intact database -----------------------------------------------
     check("verifier clean after a full day of activity", s.clean(), s.problems())
@@ -305,6 +320,9 @@ def main():
     head_seq, head_hash = s.one("SELECT seq, row_hash FROM audit_log ORDER BY seq DESC LIMIT 1")
     s.act("user", admin).x("INSERT INTO audit_checkpoint (audit_seq, audit_hash, schema_fingerprint, key_id, signature) VALUES (?, ?, ?, 'k1', 'sig')",
                            (head_seq, head_hash, fp))
+    s.blocked("checkpoint of an older position rejected",
+              "INSERT INTO audit_checkpoint (audit_seq, audit_hash, schema_fingerprint, key_id, signature)"
+              " SELECT seq, row_hash, ?, 'k1', 'sig' FROM audit_log WHERE seq = 5", (fp,), "current chain head")
     s.blocked("checkpoint must match the chain",
               "INSERT INTO audit_checkpoint (audit_seq, audit_hash, schema_fingerprint, key_id, signature) VALUES (?, 'bad', ?, 'k1', 'sig')",
               (head_seq, fp), "does not match")
@@ -373,12 +391,67 @@ def main():
     t.x("UPDATE employee SET is_active = 0 WHERE id = ?", (ben,))
     t.x(s_trigger("employee_bu"))
     t.x(s_trigger("employee_au"))
-    t.act("user", mgr).x("UPDATE employee SET first_name = 'Benjamin' WHERE id = ?", (ben,))
+    check("out-of-band edit: drift flags it", any(r[1] == ben for r in t.problems()["verify_drift_v"]))
+    t.act("user", mgr).blocked("out-of-band edit cannot be laundered by a later real edit",
+                               "UPDATE employee SET first_name = 'Benjamin' WHERE id = ?", (ben,), "previous audited image")
+    t.x("DROP TRIGGER audit_log_bi")
+    t.x("UPDATE employee SET first_name = 'Benjamin' WHERE id = ?", (ben,))
+    t.x(s_trigger("audit_log_bi"))
     p = t.problems()
-    check("out-of-band edit laundered by a later real edit: drift misses it",
-          not p["verify_drift_v"])
-    check("out-of-band edit laundered by a later real edit: continuity catches it",
+    check("laundered with the guard dropped: drift misses it", not p["verify_drift_v"])
+    check("laundered with the guard dropped: continuity catches it",
           any(r[2] == ben for r in p["verify_continuity_v"]))
+
+    # Codex review: fabricated table events and row-id reuse.
+    t = tampered("forge_update")
+    t.x("DROP TRIGGER punch_bu")
+    t.x("UPDATE punch SET occurred_utc = '2020-01-01T00:00:00.000Z' WHERE id = ?", (in_id,))
+    t.x(trig)
+    prev_img = t.one("SELECT after_json FROM audit_log WHERE table_name = 'punch' AND row_id = ?", (in_id,))[0]
+    t.blocked("fabricated UPDATE event on a punch rejected",
+              "INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json)"
+              " SELECT 'user', ?, 'x', 'UPDATE', 'punch', ?, ?, j FROM punch_snapshot_v WHERE id = ?",
+              (admin, in_id, prev_img, in_id), "only for mutable tables")
+
+    t = tampered("forge_insert")
+    t.x("DROP TRIGGER punch_bi")
+    t.x("DROP TRIGGER punch_ai")
+    t.x("INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source, recorded_utc)"
+        " VALUES (?, 'IN', '2026-01-01T13:00:00.000Z', -300, 'kiosk', '2026-01-01T13:00:00.000Z')", (ben,))
+    forged = t.one("SELECT max(id) FROM punch")[0]
+    t.x(s_trigger("punch_bi"))
+    t.x(s_trigger("punch_ai"))
+    t.act("employee", ben).blocked("fabricated INSERT event for a backdated punch rejected",
+                                   "INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, after_json)"
+                                   " SELECT 'employee', ?, 'x', 'INSERT', 'punch', id, j FROM punch_snapshot_v WHERE id = ?",
+                                   (ben, forged), "not created in this statement")
+
+    t = tampered("forge_immutable")
+    t.x("DROP TRIGGER employee_bu")
+    t.x("DROP TRIGGER employee_au")
+    before_img = t.one("SELECT j FROM employee_snapshot_v WHERE id = ?", (ben,))[0]
+    t.x("UPDATE employee SET created_utc = '2020-01-01T00:00:00.000Z' WHERE id = ?", (ben,))
+    t.x(s_trigger("employee_bu"))
+    t.x(s_trigger("employee_au"))
+    t.blocked("fabricated UPDATE changing an immutable field rejected",
+              "INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json)"
+              " SELECT 'user', ?, 'x', 'UPDATE', 'employee', id, ?, j FROM employee_snapshot_v WHERE id = ?",
+              (admin, before_img, ben), "immutable field")
+    t.blocked("fabricated event with an image that is not the row rejected",
+              "INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json)"
+              " VALUES ('user', ?, 'x', 'UPDATE', 'employee', ?, ?, '{}')", (admin, ben, before_img), "current image")
+
+    t = tampered("reuse_id")
+    last = t.one("SELECT max(id) FROM punch")[0]
+    owner = t.one("SELECT employee_id FROM punch WHERE id = ?", (last,))[0]
+    t.x("DROP TRIGGER punch_bd")
+    t.x("DELETE FROM punch WHERE id = ?", (last,))
+    t.x(s_trigger("punch_bd"))
+    check("deleted punch: drift flags the missing row",
+          any(r[0] == "punch" and r[1] == last for r in t.problems()["verify_drift_v"]))
+    t.act("employee", owner).blocked("legitimate insert cannot reuse the deleted row id and hide it",
+                                     "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source) VALUES (?, 'OUT', ?, -240, 'kiosk')",
+                                     (owner, now_utc()), "already has history")
 
     t = tampered("rewrite_chain")
     t.x("DROP TRIGGER punch_bu")
