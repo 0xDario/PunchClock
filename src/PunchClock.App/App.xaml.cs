@@ -22,10 +22,10 @@ public partial class App : Application
             var hasher = new Pbkdf2PinHasher();
             var services = new AppServices(
                 new EmployeeService(store, hasher),
-                new PunchService(store, hasher, TimeProvider.System),
+                new PunchService(store, hasher),
                 new AccountService(store, hasher),
                 new SiteSettingsService(store),
-                new PunchCorrectionService(store, TimeProvider.System));
+                new PunchCorrectionService(store));
 
 #if DEBUG
             await DemoData.SeedIfRequestedAsync(services.Employees);

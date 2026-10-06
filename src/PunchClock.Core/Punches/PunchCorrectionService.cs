@@ -40,7 +40,7 @@ public sealed record PunchReviewRow(Punch Punch, string? Issue);
 /// signed-in manager by the audit triggers, which also enforce who may correct whom.
 /// Times are entered as site-local wall time and stored as UTC plus the site offset.
 /// </summary>
-public sealed class PunchCorrectionService(IPunchClockStore store, TimeProvider clock)
+public sealed class PunchCorrectionService(IPunchClockStore store)
 {
     /// <summary>The schema's minimum, after trimming.</summary>
     public const int MinReasonLength = 10;
@@ -123,7 +123,7 @@ public sealed class PunchCorrectionService(IPunchClockStore store, TimeProvider 
                 return CorrectionResult.InvalidLocalTime;
             }
 
-            if (utc > clock.GetUtcNow())
+            if (utc > await uow.GetDatabaseUtcNowAsync(ct))
             {
                 return CorrectionResult.InFuture;
             }

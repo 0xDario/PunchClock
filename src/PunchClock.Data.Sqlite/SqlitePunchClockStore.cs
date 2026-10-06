@@ -137,6 +137,25 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
         return Convert.ToInt32(await command.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture);
     }
 
+    public async Task<int> CountRecentSignInFailuresAsync(string username, long? userId, TimeSpan window, CancellationToken ct = default)
+    {
+        await using var command = Command("""
+            SELECT count(*) FROM audit_log f
+             WHERE f.action = 'AUTH_LOGIN_FAILED'
+               AND lower(json_extract(f.after_json, '$.username')) = lower($username)
+               AND f.occurred_utc > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', $window)
+               AND NOT EXISTS (
+                   SELECT 1 FROM audit_log s
+                    WHERE s.seq > f.seq AND $user IS NOT NULL
+                      AND ((s.action = 'AUTH_LOGIN' AND s.actor_kind = 'user' AND s.actor_id = $user)
+                           OR (s.table_name = 'app_user' AND s.row_id = $user)));
+            """);
+        command.Parameters.AddWithValue("$username", username);
+        command.Parameters.AddWithValue("$user", (object?)userId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$window", FormattableString.Invariant($"-{(long)window.TotalSeconds} seconds"));
+        return Convert.ToInt32(await command.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     public async Task SetPinHashAsync(long employeeId, string pinHash, bool mustChange, CancellationToken ct = default)
     {
         await using var command = Command("UPDATE employee SET pin_hash = $pin, pin_must_change = $must WHERE id = $id;");
@@ -152,6 +171,12 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
         command.Parameters.AddWithValue("$active", isActive ? 1 : 0);
         command.Parameters.AddWithValue("$id", employeeId);
         await ExpectOneRowAsync(command, $"Employee {employeeId}", ct);
+    }
+
+    public async Task<DateTimeOffset> GetDatabaseUtcNowAsync(CancellationToken ct = default)
+    {
+        await using var command = Command("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now');");
+        return SqliteTime.Parse((string)(await command.ExecuteScalarAsync(ct))!);
     }
 
     public async Task<Punch?> FindLatestPunchAsync(long employeeId, CancellationToken ct = default)
