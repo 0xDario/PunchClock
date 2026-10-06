@@ -40,6 +40,13 @@ public sealed class LegacyImporter
 
         await CheckTargetAsync(connection, tx, plan.TimeZone, ct);
 
+        // migration_issue has no code for these yet, so they can be neither skipped nor stored.
+        var future = plan.Findings.Where(f => f.Code == FindingCode.FutureTime).Select(f => f.LegacyId).ToList();
+        if (future.Count > 0)
+            throw new ImportRefusedException(
+                $"Shift(s) {string.Join(", ", future)} are dated after today (see the check report), and the database refuses " +
+                "future punches. Correct those times in a copy of the old database and export again.");
+
         var m = plan.Export.Manifest;
         var batchId = await InsertAsync(connection, tx, """
             INSERT INTO import_batch (source_file_name, source_sha256, manifest_sha256, source_time_zone_id,

@@ -166,6 +166,21 @@ public sealed class LegacyImporterTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Refuses_a_future_dated_shift_before_writing_anything()
+    {
+        _export.Employee(22, "Fay", "Ito")
+            .Shift(60, 22, "2025-01-01 08:00:00", "2025-01-01 16:00:00")
+            .Shift(61, 22, "2099-01-01 08:00:00", "2099-01-01 16:00:00");
+        _export.Build();
+        var plan = ImportAnalyzer.Analyze(LegacyExport.Load(_export.Folder), Toronto);
+
+        var ex = await Assert.ThrowsAsync<ImportRefusedException>(() => Importer().ImportAsync(plan, _db.Database));
+
+        Assert.Contains("61", ex.Message);
+        Assert.Equal(0L, await _db.ScalarAsync("SELECT count(*) FROM import_batch"));
+    }
+
+    [Fact]
     public async Task Refuses_to_import_twice()
     {
         var plan = Plan();

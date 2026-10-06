@@ -171,7 +171,7 @@ public sealed class ExportBuilder : IDisposable
         s is null ? "" : s.Length == 0 || s.IndexOfAny([',', '"', '\r', '\n']) >= 0 ? '"' + s.Replace("\"", "\"\"") + '"' : s;
 
     static DateTime? Parse(string? s) =>
-        s is null ? null : DateTime.ParseExact(s, "yyyy-MM-dd HH:mm:ss", Inv);
+        s is null ? null : DateTime.ParseExact(s, ["yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm:ss.fff"], Inv, DateTimeStyles.None);
 
     static string Iso(DateTime? d) => d?.ToString("yyyy-MM-dd'T'HH:mm:ss.fff", Inv) ?? "";
 
