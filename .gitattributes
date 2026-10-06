@@ -64,3 +64,7 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+# Batch files need CRLF for labels and goto to work reliably
+*.cmd text eol=crlf
+*.bat text eol=crlf
