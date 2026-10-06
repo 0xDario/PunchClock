@@ -5,7 +5,7 @@ Status: draft for review. Target: .NET desktop app on Windows 10/11, one local S
 | File | What it is |
 |---|---|
 | [`schema.sql`](schema.sql) | Complete DDL: tables, triggers, hash-chain seal, read views, verifier views, seed. |
-| [`test_schema.py`](test_schema.py) | Executable proof: loads the schema, exercises every rule, plays the tamper scenarios. 69 checks. `python3 docs/database/test_schema.py` |
+| [`test_schema.py`](test_schema.py) | Executable proof: loads the schema, exercises every rule, plays the tamper scenarios. 84 checks. `python3 docs/database/test_schema.py` |
 
 ## 1. Decisions
 
@@ -44,7 +44,7 @@ Shift   (ShiftID AutoNumber, EmployeeID, TimeIn datetime, TimeOut datetime NULL 
 | Table | Mutability | Notes |
 |---|---|---|
 | `site_setting` | admin edits, audited | `time_zone_id` (Windows zone id), `max_shift_hours`. |
-| `employee` | manager edits, audited | `legacy_id`, `pin_hash`, `pin_must_change`, `is_active`. Employee may change only their own PIN. |
+| `employee` | manager edits, audited | `legacy_id`, `pin_hash`, `pin_must_change`, `is_active`. Employee may change only their own PIN, and clearing `pin_must_change` requires a new PIN. |
 | `app_user` | admin edits, audited | Roles `system` (id 1), `migration` (id 2), `admin`, `manager`. `employee_id` links a manager who also punches. |
 | `punch` | insert-only | `direction`, `occurred_utc`, `utc_offset_minutes`, `recorded_utc`, `source` ∈ {`kiosk`, `correction`, `legacy_import`}, plus `correction_id` or `import_batch_id` + `legacy_shift_id`. |
 | `punch_correction` | insert-only | `action` ∈ {`add`, `adjust`, `void`}, `target_punch_id` (UNIQUE), `new_direction`, `new_occurred_utc`, `new_utc_offset_minutes`, `reason` (≥ 10 chars), `actor_user_id`. |
@@ -57,7 +57,7 @@ Shift   (ShiftID AutoNumber, EmployeeID, TimeIn datetime, TimeOut datetime NULL 
 `punch_correction` rules, all enforced by triggers:
 
 - Actor is the active manager or admin in context, and `actor_user_id` must equal that actor.
-- A manager cannot correct their own punches (`app_user.employee_id`).
+- A manager cannot correct their own punches (`app_user.employee_id`). No account can change its own `employee_id`, so an admin cannot unlink, correct and relink.
 - The target belongs to the same employee. A punch is superseded at most once (`UNIQUE`), so the history of any punch is a linear chain; re-correcting means targeting the latest replacement.
 - `adjust` and `add` insert the replacement punch from the correction's `new_*` values inside the correction's own trigger. A `correction` punch whose values differ from its correction is rejected.
 
@@ -126,6 +126,10 @@ Length prefixes make field boundaries unambiguous. The encoding is defined once,
 The seal is enforced by the database, not trusted to the writer:
 
 - `BEFORE INSERT` rejects any caller-supplied `prev_hash`/`row_hash`, an actor different from `pc_ctx`, and an `occurred_utc` other than the database clock.
+- It also rejects any table event (`INSERT`/`UPDATE`) the table's own trigger could not have written, so a caller cannot fabricate one to cover an edit made with triggers dropped:
+  - `after_json` must equal the row's current image;
+  - an `INSERT` must be the row id's first event (no reuse of a deleted row's id) and the row's own creation time must equal the event time, i.e. same statement;
+  - `UPDATE` exists only for the four mutable tables, its `before_json` must equal the previous audited image, and it cannot change an immutable field (`id`, `created_utc`, `legacy_id`, batch provenance, service-account roles, a set `completed_utc`).
 - `AFTER INSERT` rejects a seq gap, then sets `prev_hash`, then `row_hash`.
 - `BEFORE UPDATE` allows only those two NULL-to-value writes. `BEFORE DELETE` always aborts.
 
@@ -150,7 +154,8 @@ Each `verify_*` view returns zero rows on an intact file. The app runs them at s
 |---|---|
 | `verify_chain_v` | Edited, inserted or deleted audit rows; seq gaps; stored checkpoints that no longer match the chain. |
 | `verify_drift_v` | Table rows changed, inserted or deleted with triggers dropped: current snapshot vs last audited image, both directions. |
-| `verify_continuity_v` | An out-of-band edit later "laundered" by a legitimate edit: each `UPDATE`'s before-image must equal the previous after-image. Drift alone misses this. |
+| `verify_continuity_v` | An out-of-band edit later "laundered" by a legitimate edit: each `UPDATE`'s before-image must equal the previous after-image. Drift alone misses this. (The insert guard already refuses such an edit; this catches a log written while the guard was dropped.) |
+| `verify_history_v` | Events the trigger path cannot produce: a second `INSERT` for one row id, `UPDATE` on an immutable table, a row whose creation time differs from its `INSERT` event, a checkpoint that did not anchor the head, a closed import batch that does not reconcile. |
 | `schema_fingerprint_v` vs value compiled into the app | Dropped or altered triggers, views, constraints. |
 | `verify_clock_v` (warning) | System clock moved backwards. |
 | External anchor | Everything above done consistently by someone who knows the algorithm. |
@@ -169,7 +174,7 @@ Threat model:
 |---|---|
 | Manager acting through the app | Allowed, fully attributed: who, when, why, before, after. Cannot touch own punches. |
 | Anyone with DB Browser / Access-style tools | Writes fail (`no such function`). |
-| Someone with a script that registers the functions | Writes pass the rules as the actor they claim; the audit row records that claim. Out-of-app writes with triggers dropped are caught by drift/continuity/fingerprint. |
+| Someone with a script that registers the functions | Writes pass the rules as the actor they claim; the audit row records that claim. Writes with triggers dropped are caught by drift, continuity, history and fingerprint, and fabricated audit events that would hide them are refused at insert. What remains is identity: a mutable-table change the claimed actor could have made legitimately. |
 | Admin on the box rewriting history consistently | Caught only against an off-machine anchor. Organisational control: anchors held by someone other than the manager (owner, accountant). |
 
 Confidentiality is out of scope: anyone who copies the file can read it. If that matters, add SQLCipher; nothing here changes.
@@ -208,14 +213,14 @@ Pairs with the exporter in `migration/legacy-export/` (PR #4): `Employee.csv`, `
 The scaffold's initial migration uses the same column names (`occurred_utc`, `utc_offset_minutes`, `recorded_utc`, `created_utc`, `legacy_id`). To adopt this design:
 
 - Use `schema.sql` as the initial migration (minus the two header `PRAGMA`s if the runner owns versioning). The runner's `schema_migrations` table is excluded from the fingerprint and is not audited; the runner should write a `SCHEMA_MIGRATE` audit event carrying the script checksum and the new fingerprint.
-- **SQLite 3.44 minimum.** `ORDER BY` inside an aggregate (`schema_fingerprint_v`) needs 3.44; older builds reject the schema at load. Assert `sqlite_version() >= 3.44` at startup. Do not pin an older native bundle over what the `Microsoft.Data.Sqlite` package ships. The test suite passes on 3.45.1 and 3.46.1 and fails to load on 3.41.2.
+- **SQLite 3.44 minimum.** `ORDER BY` inside an aggregate (`schema_fingerprint_v`) needs 3.44; older builds reject the schema at load. Assert `sqlite_version() >= 3.44` at startup. Do not pin an older native bundle over what the `Microsoft.Data.Sqlite` package ships. The test suite passes on 3.45.1, 3.46.1 and 3.53.3 (the scaffold's build) and fails to load on 3.41.2.
 - The connection factory must register `pc_sha256` and `pc_ctx` and set `trusted_schema = ON` on every open, **before the schema migration runs**: the seed inserts in `schema.sql` fire audit triggers that call both. The migration runs with actor `('user', 1)`.
 - `punch.source` values are `kiosk`, `correction`, `legacy_import`. The kiosk must not insert `correction` punches; it inserts `punch_correction` rows.
 - Prefer Dapper or plain ADO.NET over EF Core for writes. If EF Core is used, call `ToTable(t => t.UseSqlReturningClause(false))` on every entity: since EF Core 7, saving to SQLite tables with `AFTER` triggers via `RETURNING` fails ([EF Core 7 breaking changes](https://learn.microsoft.com/ef/core/what-is-new/ef-core-7.0/breaking-changes#high-impact-changes)).
 
 ## 11. Validation
 
-`test_schema.py` on SQLite 3.45.1 and 3.46.1: 69 checks, all passing. Covered: bootstrap; every authorization rule in both directions; kiosk impersonation, backdating, caller-supplied record times; local timestamps; immutability of punches, corrections and the log; adjust/void/add with shift recomputation; double correction; self-correction; forged correction punches; employee PIN self-service; credential hashes absent from the log; forged hashes, actor mismatch, backdated and gapped audit inserts; import with reconciliation and closed-batch lock; generic-tool writes; `trusted_schema = OFF`; an independent Python re-derivation of the whole chain. Tamper scenarios: punch edit with trigger dropped, the same with the trigger restored, audit row edit, insert bypassing the audit trigger, laundered edit, chain rewrite with stored checkpoints, full rewrite including checkpoints, tail truncation, and an untouched control copy.
+`test_schema.py` on SQLite 3.45.1, 3.46.1 and 3.53.3: 84 checks, all passing. Covered: bootstrap; every authorization rule in both directions; kiosk impersonation, backdating, caller-supplied record times; local timestamps; immutability of punches, corrections and the log; adjust/void/add with shift recomputation; double correction; self-correction, including an admin unlinking their own employee record; forged correction punches; employee PIN self-service and forced PIN reset; caller-supplied creation times; checkpoints at an old position; credential hashes absent from the log; forged hashes, actor mismatch, backdated and gapped audit inserts; import with reconciliation and closed-batch lock; generic-tool writes; `trusted_schema = OFF`; an independent Python re-derivation of the whole chain. Tamper scenarios: punch edit with trigger dropped, the same with the trigger restored, audit row edit, insert bypassing the audit trigger, laundered edit (refused, and caught when the guard is dropped), fabricated `UPDATE` and `INSERT` events, an immutable-field change behind a fabricated event, a deleted row whose id is reused, chain rewrite with stored checkpoints, full rewrite including checkpoints, tail truncation, and an untouched control copy.
 
 ## 12. Open decisions
 

@@ -223,6 +223,39 @@ CREATE TRIGGER audit_log_bi BEFORE INSERT ON audit_log BEGIN
    WHERE NEW.actor_kind IS NOT pc_ctx('actor_kind') OR NEW.actor_id IS NOT pc_ctx('actor_id');
   SELECT RAISE(ABORT, 'audit_log: occurred_utc is the database clock, not caller-supplied')
    WHERE NEW.occurred_utc IS NOT strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+  -- Table events must be exactly what the table's own trigger would write, so a caller
+  -- cannot fabricate one to cover an edit made with triggers dropped.
+  SELECT RAISE(ABORT, 'audit_log: after_json must be the current image of the row')
+   WHERE NEW.action IN ('INSERT', 'UPDATE')
+     AND NEW.after_json IS NOT (SELECT j FROM all_snapshot_v
+                                 WHERE table_name = NEW.table_name AND row_id = NEW.row_id);
+  SELECT RAISE(ABORT, 'audit_log: row id already has history (deleted row reused)')
+   WHERE NEW.action = 'INSERT'
+     AND EXISTS (SELECT 1 FROM audit_log WHERE table_name = NEW.table_name AND row_id = NEW.row_id);
+  SELECT RAISE(ABORT, 'audit_log: row was not created in this statement')
+   WHERE NEW.action = 'INSERT'
+     AND COALESCE(json_extract(NEW.after_json, '$.created_utc'), json_extract(NEW.after_json, '$.recorded_utc'),
+                  json_extract(NEW.after_json, '$.started_utc'), NEW.occurred_utc) IS NOT NEW.occurred_utc;
+  SELECT RAISE(ABORT, 'audit_log: UPDATE events exist only for mutable tables')
+   WHERE NEW.action = 'UPDATE' AND NEW.table_name NOT IN ('site_setting', 'employee', 'app_user', 'import_batch');
+  SELECT RAISE(ABORT, 'audit_log: before_json must be the previous audited image')
+   WHERE NEW.action = 'UPDATE'
+     AND NEW.before_json IS NOT (SELECT after_json FROM audit_log
+                                  WHERE table_name = NEW.table_name AND row_id = NEW.row_id
+                                    AND action IN ('INSERT', 'UPDATE')
+                                  ORDER BY seq DESC LIMIT 1);
+  SELECT RAISE(ABORT, 'audit_log: UPDATE changes an immutable field')
+   WHERE NEW.action = 'UPDATE'
+     AND (EXISTS (SELECT 1 FROM json_each('["$.id","$.key","$.legacy_id","$.created_utc","$.started_utc",
+                                          "$.source_file_name","$.source_sha256","$.manifest_sha256",
+                                          "$.source_time_zone_id","$.tool_version",
+                                          "$.manifest_employee_rows","$.manifest_shift_rows"]') f
+                   WHERE json_extract(NEW.before_json, f.value) IS NOT json_extract(NEW.after_json, f.value))
+          OR json_extract(NEW.before_json, '$.completed_utc') IS NOT NULL
+             AND json_extract(NEW.before_json, '$.completed_utc') IS NOT json_extract(NEW.after_json, '$.completed_utc')
+          OR (json_extract(NEW.before_json, '$.role') IN ('system', 'migration')
+              OR json_extract(NEW.after_json, '$.role') IN ('system', 'migration'))
+             AND json_extract(NEW.before_json, '$.role') IS NOT json_extract(NEW.after_json, '$.role'));
 END;
 
 -- Seal: refuse gaps, link to the predecessor, then hash the canonical form.
@@ -381,6 +414,8 @@ END;
 -- employee: managers, admins and the system account create and edit;
 -- an employee may change only their own PIN. Never deleted.
 CREATE TRIGGER employee_bi BEFORE INSERT ON employee BEGIN
+  SELECT RAISE(ABORT, 'employee: created_utc is the database clock, not caller-supplied')
+   WHERE NEW.created_utc IS NOT strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
   SELECT RAISE(ABORT, 'employee: manager, admin or migration only')
    WHERE NOT EXISTS (SELECT 1 FROM ctx_user_v WHERE role IN ('system', 'migration', 'admin', 'manager'));
 END;
@@ -397,7 +432,8 @@ CREATE TRIGGER employee_bu BEFORE UPDATE ON employee BEGIN
    WHERE NOT EXISTS (SELECT 1 FROM ctx_user_v WHERE role IN ('system', 'admin', 'manager'))
      AND NOT (pc_ctx('actor_kind') = 'employee' AND pc_ctx('actor_id') = OLD.id
               AND NEW.first_name IS OLD.first_name AND NEW.last_name IS OLD.last_name
-              AND NEW.is_active IS OLD.is_active AND NEW.pin_must_change = 0);
+              AND NEW.is_active IS OLD.is_active AND NEW.pin_must_change = 0
+              AND NEW.pin_hash IS NOT OLD.pin_hash);
 END;
 CREATE TRIGGER employee_au AFTER UPDATE ON employee BEGIN
   INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json, reason)
@@ -417,6 +453,8 @@ END;
 -- only their own password. The two service accounts are created once, at bootstrap:
 -- system (id 1) and migration (id 2, used only by the legacy importer).
 CREATE TRIGGER app_user_bi BEFORE INSERT ON app_user BEGIN
+  SELECT RAISE(ABORT, 'app_user: created_utc is the database clock, not caller-supplied')
+   WHERE NEW.created_utc IS NOT strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
   SELECT RAISE(ABORT, 'app_user: not authorized')
    WHERE NOT (
          (NEW.role IN ('admin', 'manager')
@@ -435,12 +473,16 @@ CREATE TRIGGER app_user_bu BEFORE UPDATE ON app_user BEGIN
   SELECT RAISE(ABORT, 'app_user: id, created_utc and service-account roles are immutable')
    WHERE NEW.id IS NOT OLD.id OR NEW.created_utc IS NOT OLD.created_utc
       OR ((OLD.role IN ('system', 'migration') OR NEW.role IN ('system', 'migration')) AND NEW.role IS NOT OLD.role);
+  SELECT RAISE(ABORT, 'app_user: an account cannot change its own employee link')
+   WHERE pc_ctx('actor_kind') = 'user' AND pc_ctx('actor_id') = OLD.id
+     AND NEW.employee_id IS NOT OLD.employee_id;
   SELECT RAISE(ABORT, 'app_user: not authorized')
    WHERE NOT EXISTS (SELECT 1 FROM ctx_user_v WHERE role IN ('system', 'admin'))
      AND NOT (pc_ctx('actor_kind') = 'user' AND pc_ctx('actor_id') = OLD.id AND OLD.is_active = 1
               AND NEW.username IS OLD.username AND NEW.display_name IS OLD.display_name
               AND NEW.role IS OLD.role AND NEW.employee_id IS OLD.employee_id
-              AND NEW.is_active IS OLD.is_active AND NEW.must_change_password = 0);
+              AND NEW.is_active IS OLD.is_active AND NEW.must_change_password = 0
+              AND NEW.password_hash IS NOT OLD.password_hash);
 END;
 CREATE TRIGGER app_user_au AFTER UPDATE ON app_user BEGIN
   INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json, reason)
@@ -463,6 +505,8 @@ CREATE TRIGGER import_batch_bi BEFORE INSERT ON import_batch BEGIN
   SELECT RAISE(ABORT, 'import_batch: migration account only')
    WHERE NOT EXISTS (SELECT 1 FROM ctx_user_v WHERE role = 'migration');
   SELECT RAISE(ABORT, 'import_batch: must start open') WHERE NEW.completed_utc IS NOT NULL;
+  SELECT RAISE(ABORT, 'import_batch: started_utc is the database clock, not caller-supplied')
+   WHERE NEW.started_utc IS NOT strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
 END;
 CREATE TRIGGER import_batch_ai AFTER INSERT ON import_batch BEGIN
   INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json, reason)
@@ -480,6 +524,8 @@ CREATE TRIGGER import_batch_bu BEFORE UPDATE ON import_batch BEGIN
       OR NEW.tool_version IS NOT OLD.tool_version OR NEW.started_utc IS NOT OLD.started_utc
       OR NEW.manifest_employee_rows IS NOT OLD.manifest_employee_rows
       OR NEW.manifest_shift_rows IS NOT OLD.manifest_shift_rows;
+  SELECT RAISE(ABORT, 'import_batch: completed_utc is the database clock, not caller-supplied')
+   WHERE NEW.completed_utc IS NOT strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
   SELECT RAISE(ABORT, 'import_batch: raw row counts do not match the manifest')
    WHERE (SELECT count(*) FROM legacy_employee_raw WHERE import_batch_id = OLD.id) <> OLD.manifest_employee_rows
       OR (SELECT count(*) FROM legacy_shift_raw WHERE import_batch_id = OLD.id) <> OLD.manifest_shift_rows;
@@ -622,12 +668,16 @@ CREATE TRIGGER punch_correction_bd BEFORE DELETE ON punch_correction BEGIN
   SELECT RAISE(ABORT, 'punch_correction rows are immutable');
 END;
 
--- audit_checkpoint: insert-only, system or admin, must name a real chain position.
+-- audit_checkpoint: insert-only, system or admin, must anchor the current chain head.
 CREATE TRIGGER audit_checkpoint_bi BEFORE INSERT ON audit_checkpoint BEGIN
   SELECT RAISE(ABORT, 'audit_checkpoint: system or admin only')
    WHERE NOT EXISTS (SELECT 1 FROM ctx_user_v WHERE role IN ('system', 'admin'));
+  SELECT RAISE(ABORT, 'audit_checkpoint: created_utc is the database clock, not caller-supplied')
+   WHERE NEW.created_utc IS NOT strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
   SELECT RAISE(ABORT, 'audit_checkpoint: does not match the audit chain')
    WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE seq = NEW.audit_seq AND row_hash = NEW.audit_hash);
+  SELECT RAISE(ABORT, 'audit_checkpoint: must anchor the current chain head')
+   WHERE NEW.audit_seq IS NOT (SELECT max(seq) FROM audit_log);
 END;
 CREATE TRIGGER audit_checkpoint_ai AFTER INSERT ON audit_checkpoint BEGIN
   INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id, before_json, after_json, reason)
@@ -760,6 +810,35 @@ SELECT u.seq, u.table_name, u.row_id, 'before image differs from the previous au
                               WHERE p.table_name = u.table_name AND p.row_id = u.row_id
                                 AND p.seq < u.seq AND p.action IN ('INSERT', 'UPDATE')
                               ORDER BY p.seq DESC LIMIT 1);
+
+-- Events the trigger path cannot produce.
+CREATE VIEW verify_history_v AS
+SELECT a.seq, a.table_name, a.row_id, 'row id has more than one INSERT event' AS problem
+  FROM audit_log a
+ WHERE a.action = 'INSERT'
+   AND EXISTS (SELECT 1 FROM audit_log b WHERE b.action = 'INSERT' AND b.table_name = a.table_name
+                                          AND b.row_id = a.row_id AND b.seq < a.seq)
+UNION ALL
+SELECT seq, table_name, row_id, 'UPDATE event on an immutable table'
+  FROM audit_log
+ WHERE action = 'UPDATE' AND table_name NOT IN ('site_setting', 'employee', 'app_user', 'import_batch')
+UNION ALL
+SELECT seq, table_name, row_id, 'row creation time differs from its INSERT event'
+  FROM audit_log
+ WHERE action = 'INSERT'
+   AND COALESCE(json_extract(after_json, '$.created_utc'), json_extract(after_json, '$.recorded_utc'),
+                json_extract(after_json, '$.started_utc'), occurred_utc) IS NOT occurred_utc
+UNION ALL
+SELECT a.seq, a.table_name, a.row_id, 'checkpoint did not anchor the head when created'
+  FROM audit_log a
+ WHERE a.action = 'INSERT' AND a.table_name = 'audit_checkpoint'
+   AND json_extract(a.after_json, '$.audit_seq') IS NOT a.seq - 1
+UNION ALL
+SELECT NULL, 'import_batch', b.id, 'closed batch does not reconcile with its manifest'
+  FROM import_batch b
+ WHERE b.completed_utc IS NOT NULL
+   AND ((SELECT count(*) FROM legacy_employee_raw WHERE import_batch_id = b.id) <> b.manifest_employee_rows
+     OR (SELECT count(*) FROM legacy_shift_raw WHERE import_batch_id = b.id) <> b.manifest_shift_rows);
 
 -- Warning, not proof: the wall clock moved back more than 60 s between audit rows.
 CREATE VIEW verify_clock_v AS
