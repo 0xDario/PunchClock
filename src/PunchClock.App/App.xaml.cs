@@ -2,6 +2,7 @@ using System.Windows;
 using PunchClock.Core.Accounts;
 using PunchClock.Core.Employees;
 using PunchClock.Core.Punches;
+using PunchClock.Core.Reports;
 using PunchClock.Core.Security;
 using PunchClock.Core.Site;
 using PunchClock.Data.Sqlite;
@@ -25,7 +26,9 @@ public partial class App : Application
                 new PunchService(store, hasher),
                 new AccountService(store, hasher),
                 new SiteSettingsService(store),
-                new PunchCorrectionService(store));
+                new PunchCorrectionService(store),
+                new ReportService(store),
+                new DatabaseMaintenance(database, store));
 
 #if DEBUG
             await DemoData.SeedIfRequestedAsync(services.Employees);
@@ -54,4 +57,6 @@ public sealed record AppServices(
     PunchService Punches,
     AccountService Accounts,
     SiteSettingsService Site,
-    PunchCorrectionService Corrections);
+    PunchCorrectionService Corrections,
+    ReportService Reports,
+    DatabaseMaintenance Maintenance);

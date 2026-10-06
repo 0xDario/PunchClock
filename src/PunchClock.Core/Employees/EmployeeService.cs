@@ -147,11 +147,17 @@ public sealed class EmployeeService(IPunchClockStore store, IPinHasher pinHasher
             return PinChangeResult.TooManyAttempts;
         }
 
-        if (!pinHasher.Verify(currentPin, employee.PinHash))
+        if (!PinPolicy.Matches(pinHasher, employee, currentPin))
         {
             await uow.RecordEventAsync(AuditEvent.AuthPinFailed, ct: ct);
             await uow.CommitAsync(ct);
             return PinChangeResult.InvalidCurrentPin;
+        }
+
+        // Also catches the old PIN typed with or without its lost leading zeros.
+        if (PinPolicy.Matches(pinHasher, employee, newPin))
+        {
+            return PinChangeResult.NewPinRejected;
         }
 
         await uow.SetPinHashAsync(employeeId, pinHasher.Hash(newPin), mustChange: false, ct);
