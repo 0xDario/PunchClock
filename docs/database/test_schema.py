@@ -143,6 +143,11 @@ def main():
     s.act("user", 1).blocked("unknown time zone id rejected",
                              "UPDATE site_setting SET value = 'Mars/Olympus_Mons' WHERE key = 'time_zone_id'", (), "known Windows time zone")
     s.x("UPDATE site_setting SET value = 'Eastern Standard Time' WHERE key = 'time_zone_id'")
+    for bad in ("0", "abc", "100", "08", "-4", "12.5"):
+        s.blocked(f"max_shift_hours '{bad}' rejected",
+                  "UPDATE site_setting SET value = ? WHERE key = 'max_shift_hours'", (bad,), "whole number from 1 to 48")
+    s.x("UPDATE site_setting SET value = '14' WHERE key = 'max_shift_hours'")
+    check("max_shift_hours accepts a valid value", s.one("SELECT value FROM site_setting WHERE key = 'max_shift_hours'")[0] == "14")
     s.x("INSERT INTO app_user (username, display_name, role, password_hash) VALUES ('owner', 'Owner', 'admin', 'pbkdf2-sha256$x')")
     admin = s.one("SELECT id FROM app_user WHERE username = 'owner'")[0]
     s.act("user", admin).x("INSERT INTO app_user (username, display_name, role, password_hash) VALUES ('mgr', 'Manager', 'manager', 'pbkdf2-sha256$y')")
@@ -304,12 +309,15 @@ def main():
                              " VALUES ('PunchClock.accdb', ?, ?, 'Eastern Standard Time', '1.0', 1, 2)", ("a" * 64, "b" * 64), "migration account")
     s.act("user", 2, "Legacy import from PunchClock.accdb")
     s.x("INSERT INTO import_batch (source_file_name, source_sha256, manifest_sha256, source_time_zone_id, tool_version, manifest_employee_rows, manifest_shift_rows)"
-        " VALUES ('PunchClock.accdb', ?, ?, 'Eastern Standard Time', '1.0', 1, 3)", ("a" * 64, "b" * 64))
+        " VALUES ('PunchClock.accdb', ?, ?, 'Eastern Standard Time', '1.0', 1, 4)", ("a" * 64, "b" * 64))
     batch = s.one("SELECT max(id) FROM import_batch")[0]
     ev = s.one("SELECT actor_id, after_json FROM audit_log WHERE table_name = 'import_batch' AND row_id = ?", (batch,))
     check("one import audit event carries source SHA-256 and manifest counts",
-          ev[0] == 2 and "a" * 64 in ev[1] and '"manifest_shift_rows":3' in ev[1])
+          ev[0] == 2 and "a" * 64 in ev[1] and '"manifest_shift_rows":4' in ev[1])
     s.x("INSERT INTO legacy_employee_raw (import_batch_id, legacy_employee_id, first_name, last_name, is_active, pin_digits) VALUES (?, 7, 'Old', 'Timer', 1, 3)", (batch,))
+    s.blocked("imported employee must start with a forced PIN reset",
+              "INSERT INTO employee (legacy_id, first_name, last_name, pin_hash) VALUES (7, 'Old', 'Timer', 'pbkdf2-sha256$o')",
+              (), "pin_must_change = 1")
     s.x("INSERT INTO employee (legacy_id, first_name, last_name, pin_hash, pin_must_change) VALUES (7, 'Old', 'Timer', 'pbkdf2-sha256$o', 1)")
     old = s.one("SELECT id FROM employee WHERE legacy_id = 7")[0]
     s.x("INSERT INTO legacy_shift_raw (import_batch_id, legacy_shift_id, legacy_employee_id, time_in_local, time_in_oadate, time_out_local, time_out_oadate)"
@@ -338,11 +346,23 @@ def main():
               (old, "IN", "2023-03-01T13:00:00.000Z", -240, batch, 41), "time zone")
     s.x("INSERT INTO legacy_shift_raw (import_batch_id, legacy_shift_id, legacy_employee_id, time_in_local, time_in_oadate, time_out_local, time_out_oadate)"
         " VALUES (?, 43, 7, '2023-03-12T02:30:00.000', '44997.1041666667', '2023-03-12T10:00:00.000', '44997.4166666667')", (batch,))
+    s.x("INSERT INTO legacy_shift_raw (import_batch_id, legacy_shift_id, legacy_employee_id, time_in_local, time_in_oadate, time_out_local, time_out_oadate)"
+        " VALUES (?, 44, 7, '2023-11-05T01:30:00.000', '45235.0625', '2023-11-05T09:00:00.000', '45235.375')", (batch,))
+    s.blocked("batch cannot close while a raw shift has no punches or SKIPPED issue",
+              "UPDATE import_batch SET completed_utc = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?", (batch,), "SKIPPED issue")
     s.blocked("spring-forward shift moved one hour needs its DST_INVALID issue first", imp,
               (old, "IN", "2023-03-12T07:30:00.000Z", -240, batch, 43), "raw legacy shift")
     s.x("INSERT INTO migration_issue (import_batch_id, legacy_table, legacy_pk, code, disposition) VALUES (?, 'Shift', 43, 'DST_INVALID', 'IMPORTED_FLAGGED')", (batch,))
     s.x(imp, (old, "IN", "2023-03-12T07:30:00.000Z", -240, batch, 43))
     s.x(imp, (old, "OUT", "2023-03-12T14:00:00.000Z", -240, batch, 43))
+    s.blocked("ambiguous fall-back time must take the earlier (daylight) occurrence", imp,
+              (old, "IN", "2023-11-05T06:30:00.000Z", -300, batch, 44), "earlier (daylight)")
+    s.x("INSERT INTO migration_issue (import_batch_id, legacy_table, legacy_pk, code, disposition) VALUES (?, 'Shift', 44, 'DST_AMBIGUOUS', 'IMPORTED_FLAGGED')", (batch,))
+    s.x(imp, (old, "IN", "2023-11-05T05:30:00.000Z", -240, batch, 44))
+    s.x(imp, (old, "OUT", "2023-11-05T14:00:00.000Z", -300, batch, 44))
+    check("ambiguous fall-back shift imports at the daylight occurrence (8.5 h)",
+          s.one("SELECT duration_sec FROM shift_v WHERE in_punch_id IN (SELECT id FROM punch WHERE legacy_shift_id = 44)")[0]
+          == 8.5 * 3600)
     check("spring-forward shift imports one hour later once DST_INVALID is recorded",
           s.one("SELECT in_local FROM shift_v WHERE in_punch_id IN (SELECT id FROM punch WHERE legacy_shift_id = 43)")[0]
           == "2023-03-12 03:30:00")
@@ -561,6 +581,19 @@ def main():
           ("punch", phantom) in rules
           and len([r for r in p["verify_rules_v"] if r[1] == phantom]) == 2)
     check("admission bypass: admin self-correction flagged", ("punch_correction", self_fix) in rules)
+
+    t = tampered("import_gaps")
+    t.act("user", 2)
+    t.x("DROP TRIGGER employee_bi")
+    t.x("INSERT INTO employee (legacy_id, first_name, last_name, pin_hash) VALUES (99, 'Leaked', 'Pin', 'h')")
+    leaked = t.one("SELECT id FROM employee WHERE legacy_id = 99")[0]
+    t.x(s_trigger("employee_bi"))
+    t.x("DROP TRIGGER legacy_shift_raw_bi")
+    t.x("INSERT INTO legacy_shift_raw (import_batch_id, legacy_shift_id, legacy_employee_id, time_in_local) VALUES (?, 45, 7, '2023-03-06T09:00:00.000')", (batch,))
+    t.x(s_trigger("legacy_shift_raw_bi"))
+    rules = {(r[0], r[1]) for r in t.problems()["verify_rules_v"]}
+    check("imported employee without a forced PIN reset flagged", ("employee", leaked) in rules)
+    check("closed batch with a raw shift that never became punches flagged", ("import_batch", batch) in rules)
 
     t = tampered("rewrite_chain")
     t.x("DROP TRIGGER punch_bu")
