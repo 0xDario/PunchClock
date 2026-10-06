@@ -17,7 +17,9 @@
 --                      Raises an error if actor_kind, actor_id or client is unset.
 --
 -- Per-connection pragmas, set by the app on open (SQLite does not persist them):
---   foreign_keys = ON, synchronous = FULL, busy_timeout = 5000, trusted_schema = ON
+--   foreign_keys = ON, synchronous = FULL, busy_timeout = 5000, trusted_schema = ON,
+--   recursive_triggers = ON (without it, the delete done by INSERT/UPDATE OR REPLACE
+--   skips every BEFORE DELETE guard below)
 -- Persistent, set once at creation outside any transaction: journal_mode = WAL
 --
 -- Timestamps: UTC TEXT, fixed width YYYY-MM-DDTHH:MM:SS.sssZ, so text order is time order.
@@ -110,7 +112,7 @@ CREATE TABLE migration_issue (
   code            TEXT NOT NULL CHECK (code IN (
                     'DUMMY_SHIFT', 'OPEN_SHIFT', 'NULL_TIME_IN', 'NEGATIVE_DURATION', 'LONG_SHIFT',
                     'OVERLAPPING_SHIFT', 'DST_AMBIGUOUS', 'DST_INVALID', 'ORPHAN_EMPLOYEE',
-                    'NULL_NAME', 'PIN_RESET_REQUIRED', 'OUT_OF_ORDER_ID', 'CROSSES_DST')),
+                    'NULL_NAME', 'PIN_RESET_REQUIRED', 'OUT_OF_ORDER_ID', 'CROSSES_DST', 'FUTURE_TIME')),
   disposition     TEXT NOT NULL CHECK (disposition IN ('IMPORTED', 'IMPORTED_FLAGGED', 'SKIPPED')),
   detail_json     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(detail_json))
 ) STRICT;
@@ -228,12 +230,17 @@ CREATE TRIGGER audit_log_bi BEFORE INSERT ON audit_log BEGIN
    WHERE NEW.client IS NOT pc_ctx('client');
   SELECT RAISE(ABORT, 'audit_log: occurred_utc is the database clock, not caller-supplied')
    WHERE NEW.occurred_utc IS NOT strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+  -- OR REPLACE on an existing seq would delete that row first; refuse it even on a
+  -- connection that skipped recursive_triggers.
+  SELECT RAISE(ABORT, 'audit_log is append-only')
+   WHERE EXISTS (SELECT 1 FROM audit_log WHERE seq = NEW.seq);
   -- Table events must be exactly what the table's own trigger would write, so a caller
   -- cannot fabricate one to cover an edit made with triggers dropped.
   SELECT RAISE(ABORT, 'audit_log: after_json must be the current image of the row')
    WHERE NEW.action IN ('INSERT', 'UPDATE')
-     AND NEW.after_json IS NOT (SELECT j FROM all_snapshot_v
-                                 WHERE table_name = NEW.table_name AND row_id = NEW.row_id);
+     AND (NEW.after_json IS NULL
+          OR NEW.after_json IS NOT (SELECT j FROM all_snapshot_v
+                                     WHERE table_name = NEW.table_name AND row_id = NEW.row_id));
   SELECT RAISE(ABORT, 'audit_log: row id already has history (deleted row reused)')
    WHERE NEW.action = 'INSERT'
      AND EXISTS (SELECT 1 FROM audit_log WHERE table_name = NEW.table_name AND row_id = NEW.row_id);
@@ -488,7 +495,7 @@ CREATE TRIGGER employee_bu BEFORE UPDATE ON employee BEGIN
    WHERE NEW.id IS NOT OLD.id OR NEW.legacy_id IS NOT OLD.legacy_id OR NEW.created_utc IS NOT OLD.created_utc;
   SELECT RAISE(ABORT, 'employee: not authorized')
    WHERE NOT EXISTS (SELECT 1 FROM ctx_user_v WHERE role IN ('system', 'admin', 'manager'))
-     AND NOT (pc_ctx('actor_kind') = 'employee' AND pc_ctx('actor_id') = OLD.id
+     AND NOT (pc_ctx('actor_kind') = 'employee' AND pc_ctx('actor_id') = OLD.id AND OLD.is_active = 1
               AND NEW.first_name IS OLD.first_name AND NEW.last_name IS OLD.last_name
               AND NEW.is_active IS OLD.is_active AND NEW.pin_must_change = 0
               AND NEW.pin_hash IS NOT OLD.pin_hash);
@@ -799,11 +806,13 @@ SELECT e.id AS employee_id, e.first_name, e.last_name, e.is_active,
        lp.direction AS last_direction, lp.occurred_utc AS last_punch_utc
   FROM employee e
   LEFT JOIN (SELECT employee_id, direction, occurred_utc,
-                    row_number() OVER (PARTITION BY employee_id ORDER BY occurred_utc DESC, id DESC) AS rn
+                    row_number() OVER (PARTITION BY employee_id
+                                       ORDER BY occurred_utc DESC, direction = 'IN' DESC, id DESC) AS rn
                FROM punch_effective_v) lp
          ON lp.employee_id = e.id AND lp.rn = 1;
 
--- Each effective IN paired with the next effective punch of the same employee.
+-- Each effective IN paired with the next effective punch of the same employee. At the
+-- same instant an OUT sorts before an IN, so back-to-back shifts close before reopening.
 -- Local times use the offset recorded with each punch, never the machine's current
 -- zone, so a DST change cannot move history. Durations are UTC arithmetic.
 CREATE VIEW shift_v AS
@@ -814,7 +823,7 @@ WITH ordered AS (
          lead(occurred_utc)       OVER w AS next_occurred_utc,
          lead(utc_offset_minutes) OVER w AS next_utc_offset_minutes
     FROM punch_effective_v p
-  WINDOW w AS (PARTITION BY employee_id ORDER BY occurred_utc, id)
+  WINDOW w AS (PARTITION BY employee_id ORDER BY occurred_utc, direction = 'IN', id)
 )
 SELECT employee_id,
        id AS in_punch_id,
@@ -836,7 +845,7 @@ SELECT employee_id,
 -- The manager's review queue before payroll. Fixed only by corrections.
 CREATE VIEW punch_exception_v AS
 WITH ordered AS (
-  SELECT p.*, lag(direction) OVER (PARTITION BY employee_id ORDER BY occurred_utc, id) AS prev_direction
+  SELECT p.*, lag(direction) OVER (PARTITION BY employee_id ORDER BY occurred_utc, direction = 'IN', id) AS prev_direction
     FROM punch_effective_v p
 ),
 max_shift AS (
@@ -926,6 +935,19 @@ SELECT a.seq, a.table_name, a.row_id, 'checkpoint did not anchor the head when c
  WHERE a.action = 'INSERT' AND a.table_name = 'audit_checkpoint'
    AND json_extract(a.after_json, '$.audit_seq') IS NOT a.seq - 1
 UNION ALL
+SELECT a.seq, a.table_name, a.row_id, 'closed import batch changed again'
+  FROM audit_log a
+ WHERE a.action = 'UPDATE' AND a.table_name = 'import_batch'
+   AND json_extract(a.before_json, '$.completed_utc') IS NOT NULL
+UNION ALL
+SELECT a.seq, a.table_name, a.row_id, 'import evidence added after its batch closed'
+  FROM audit_log a
+ WHERE a.action = 'INSERT'
+   AND a.table_name IN ('legacy_employee_raw', 'legacy_shift_raw', 'migration_issue', 'punch')
+   AND EXISTS (SELECT 1 FROM audit_log c
+                WHERE c.table_name = 'import_batch' AND c.action = 'UPDATE' AND c.seq < a.seq
+                  AND c.row_id = json_extract(a.after_json, '$.import_batch_id'))
+UNION ALL
 SELECT NULL, 'import_batch', b.id, 'closed batch does not reconcile with its manifest'
   FROM import_batch b
  WHERE b.completed_utc IS NOT NULL
@@ -975,14 +997,6 @@ UNION ALL
 SELECT 'punch', id, 'punch time is later than when it was recorded'
   FROM pe WHERE occurred_utc > recorded_utc
 UNION ALL
-SELECT 'punch', id, 'offset does not match the time zone in effect'
-  FROM pe
- WHERE utc_offset_minutes IS NOT pc_utc_offset(
-         CASE WHEN source = 'legacy_import'
-              THEN (SELECT source_time_zone_id FROM import_batch WHERE id = pe.import_batch_id)
-              ELSE site_zone_then END,
-         occurred_utc)
-UNION ALL
 SELECT 'punch', id, 'correction punch does not match its correction'
   FROM pe
  WHERE source = 'correction'
@@ -1010,18 +1024,22 @@ SELECT 'punch', id, 'import punch does not match its raw legacy shift'
                       AND strftime('%Y-%m-%dT%H:%M:%f', pe.occurred_utc, pe.utc_offset_minutes || ' minutes')
                           IN (v.wall_local, v.wall_local_dst_shifted))
 UNION ALL
-SELECT 'punch', id, 'import punch took the later occurrence of an ambiguous local time'
-  FROM pe
- WHERE source = 'legacy_import'
-   AND pc_utc_offset((SELECT source_time_zone_id FROM import_batch WHERE id = pe.import_batch_id),
-                     strftime('%Y-%m-%dT%H:%M:%fZ', occurred_utc, '-60 minutes'))
-       IS utc_offset_minutes + 60
-UNION ALL
 SELECT 'employee', a.row_id, 'imported employee created without a forced PIN reset'
   FROM audit_log a
  WHERE a.table_name = 'employee' AND a.action = 'INSERT'
    AND json_extract(a.after_json, '$.legacy_id') IS NOT NULL
    AND json_extract(a.after_json, '$.pin_must_change') IS NOT 1
+UNION ALL
+SELECT 'employee', a.row_id, 'employee self-service change other than an active employee''s own new PIN'
+  FROM audit_log a
+ WHERE a.table_name = 'employee' AND a.action = 'UPDATE' AND a.actor_kind = 'employee'
+   AND NOT (a.actor_id = a.row_id
+            AND json_extract(a.before_json, '$.is_active') = 1
+            AND json_extract(a.after_json, '$.is_active') = 1
+            AND json_extract(a.after_json, '$.first_name') IS json_extract(a.before_json, '$.first_name')
+            AND json_extract(a.after_json, '$.last_name') IS json_extract(a.before_json, '$.last_name')
+            AND json_extract(a.after_json, '$.pin_must_change') = 0
+            AND json_extract(a.after_json, '$.pin_hash_digest') IS NOT json_extract(a.before_json, '$.pin_hash_digest'))
 UNION ALL
 SELECT 'import_batch', b.id, 'closed batch has unreconciled raw rows'
   FROM import_batch b
@@ -1044,6 +1062,31 @@ SELECT 'punch_correction', id, 'correction target belongs to another employee'
  WHERE target_punch_id IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM punch WHERE id = ce.target_punch_id AND employee_id = ce.employee_id);
 
+-- Warning, not proof: offsets re-derived with today's time zone data. Write time already
+-- enforces them (punch_bi); this re-check catches a punch admitted with that trigger
+-- dropped, but a Windows time zone update that changes past rules also lands here, so
+-- the app reports these rows for review and does not gate startup on them.
+CREATE VIEW verify_offset_v AS
+WITH pe AS (
+  SELECT p.*,
+         CASE WHEN p.source = 'legacy_import'
+              THEN (SELECT source_time_zone_id FROM import_batch WHERE id = p.import_batch_id)
+              ELSE (SELECT json_extract(h.after_json, '$.value') FROM audit_log h
+                     WHERE h.table_name = 'site_setting' AND h.action IN ('INSERT', 'UPDATE') AND h.seq < a.seq
+                       AND json_extract(h.after_json, '$.key') = 'time_zone_id'
+                     ORDER BY h.seq DESC LIMIT 1) END AS zone_then
+    FROM punch p
+    JOIN audit_log a ON a.table_name = 'punch' AND a.row_id = p.id AND a.action = 'INSERT'
+)
+SELECT 'punch' AS table_name, id AS row_id, 'offset does not match the time zone in effect' AS problem
+  FROM pe WHERE utc_offset_minutes IS NOT pc_utc_offset(zone_then, occurred_utc)
+UNION ALL
+SELECT 'punch', id, 'import punch took the later occurrence of an ambiguous local time'
+  FROM pe
+ WHERE source = 'legacy_import'
+   AND pc_utc_offset(zone_then, strftime('%Y-%m-%dT%H:%M:%fZ', occurred_utc, '-60 minutes'))
+       IS utc_offset_minutes + 60;
+
 -- Warning, not proof: the wall clock moved back more than 60 s between audit rows.
 CREATE VIEW verify_clock_v AS
 SELECT a.seq, a.occurred_utc, p.occurred_utc AS previous_occurred_utc, 'clock moved backwards' AS problem
@@ -1055,7 +1098,8 @@ SELECT a.seq, a.occurred_utc, p.occurred_utc AS previous_occurred_utc, 'clock mo
 CREATE VIEW schema_fingerprint_v AS
 SELECT pc_sha256(json_group_array(json_array(type, name, tbl_name, sql) ORDER BY type, name)) AS fingerprint
   FROM sqlite_schema
- WHERE name NOT LIKE 'sqlite_%' AND name <> 'schema_migrations';
+ WHERE lower(substr(name, 1, 7)) <> 'sqlite_'
+   AND NOT (type = 'table' AND name = 'schema_migrations');
 
 -- ===========================================================================
 -- Seed
