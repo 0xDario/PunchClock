@@ -308,19 +308,43 @@ internal static class Program
                 throw new ExportFormatException($"{path} is not an export folder or .zip.");
 
             var temp = Path.Combine(Path.GetTempPath(), "punchclock-import-" + Guid.NewGuid().ToString("N"));
-            ZipFile.ExtractToDirectory(path, temp);
-            var folder = File.Exists(Path.Combine(temp, "manifest.json"))
-                ? temp
-                : Directory.GetDirectories(temp).SingleOrDefault(d => File.Exists(Path.Combine(d, "manifest.json")))
-                  ?? throw new ExportFormatException($"{Path.GetFileName(path)} has no manifest.json.");
-            return new ExportSource { Folder = folder, _temp = temp };
+            var source = new ExportSource { Folder = temp, _temp = temp };
+            try
+            {
+                ZipFile.ExtractToDirectory(path, temp);
+                var folder = File.Exists(Path.Combine(temp, "manifest.json"))
+                    ? temp
+                    : Directory.GetDirectories(temp).SingleOrDefault(d => File.Exists(Path.Combine(d, "manifest.json")))
+                      ?? throw new ExportFormatException($"{Path.GetFileName(path)} has no manifest.json.");
+                return new ExportSource { Folder = folder, _temp = temp };
+            }
+            catch
+            {
+                source.Dispose();
+                throw;
+            }
         }
 
+        /// <summary>
+        /// Never throws: this also runs after an import has committed, where an
+        /// exception would reach Main and wrongly report that nothing was written.
+        /// </summary>
         public void Dispose()
         {
             // The unpacked copy holds plaintext PINs; do not leave it in %TEMP%.
-            if (_temp is not null && Directory.Exists(_temp))
+            if (_temp is null || !Directory.Exists(_temp))
+                return;
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(_temp, "*", SearchOption.AllDirectories))
+                    File.SetAttributes(file, FileAttributes.Normal);
                 Directory.Delete(_temp, recursive: true);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Could not delete the unpacked export at {_temp} ({ex.Message}).");
+                Console.Error.WriteLine("It holds the old PINs in plain text: delete that folder by hand.");
+            }
         }
     }
 }

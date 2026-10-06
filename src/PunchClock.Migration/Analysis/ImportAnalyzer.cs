@@ -217,7 +217,8 @@ public static class ImportAnalyzer
     /// Converts a legacy wall-clock time to UTC. In the repeated hour when
     /// clocks go back, the earlier (daylight) instant is used; in the skipped
     /// hour when clocks go forward, the offset in force before the gap is used,
-    /// which moves the time forward by the DST step. Both are flagged because
+    /// which moves the time forward by the DST step, and the offset stored is
+    /// the one in force at that resulting instant. Both are flagged because
     /// the true instant cannot be known.
     /// </summary>
     public static ResolvedTime Resolve(DateTime local, TimeZoneInfo zone, Action<FindingCode>? flag = null)
@@ -226,8 +227,9 @@ public static class ImportAnalyzer
         TimeSpan offset;
         if (zone.IsInvalidTime(local))
         {
-            offset = zone.GetUtcOffset(local.AddHours(-6));
+            var utc = DateTime.SpecifyKind(local - zone.GetUtcOffset(local.AddHours(-6)), DateTimeKind.Utc);
             flag?.Invoke(FindingCode.DstNonexistentTime);
+            return new ResolvedTime(local, utc, (int)zone.GetUtcOffset(utc).TotalMinutes);
         }
         else if (zone.IsAmbiguousTime(local))
         {
