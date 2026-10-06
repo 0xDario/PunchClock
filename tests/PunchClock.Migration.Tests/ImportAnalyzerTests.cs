@@ -67,16 +67,21 @@ public sealed class ImportAnalyzerTests : IDisposable
     }
 
     [Fact]
-    public void Flags_a_shift_dated_after_the_import_and_the_importer_refuses_it()
+    public void Skips_a_shift_dated_after_the_import()
     {
         _export.Employee(1, "Ann", "Lee")
             .Shift(10, 1, "2025-01-01 08:00:00", "2025-01-01 16:00:00")
-            .Shift(11, 1, "2099-01-01 08:00:00", "2099-01-01 16:00:00");
+            .Shift(11, 1, "2099-01-01 08:00:00", "2099-01-01 16:00:00")
+            .Shift(12, 1, "2025-01-02 08:00:00", "2099-01-02 16:00:00");
 
         var plan = Analyze();
 
-        Assert.Contains(FindingCode.FutureTime, Codes(plan, 11));
-        Assert.Equal(FindingLevel.Review, plan.Findings.Single(f => f.Code == FindingCode.FutureTime).Level);
+        Assert.Equal([FindingCode.FutureTime], Codes(plan, 11));
+        Assert.Equal([FindingCode.FutureTime], Codes(plan, 12));
+        Assert.Equal(Disposition.Skipped, plan.Shifts.Single(s => s.Source.ShiftId == 11).Disposition);
+        Assert.Equal(Disposition.Skipped, plan.Shifts.Single(s => s.Source.ShiftId == 12).Disposition);
+        Assert.Equal(Disposition.Imported, plan.Shifts.Single(s => s.Source.ShiftId == 10).Disposition);
+        Assert.All(plan.Findings.Where(f => f.Code == FindingCode.FutureTime), f => Assert.Equal(FindingLevel.Review, f.Level));
     }
 
     [Fact]

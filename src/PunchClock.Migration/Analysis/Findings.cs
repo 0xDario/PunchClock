@@ -88,7 +88,7 @@ public static class FindingInfo
         FindingCode.PinMissing => "Employee has no PIN; a temporary PIN is issued at import",
         FindingCode.PinLostLeadingZeros => "PIN is shorter than 3 digits, so Access dropped its leading zeros",
         FindingCode.PinMayHaveLostLeadingZeros => "PIN is shorter than others; it may have started with 0, which Access dropped",
-        FindingCode.FutureTime => "Shift is dated after the import (the PC clock was probably wrong); the import cannot store it",
+        FindingCode.FutureTime => "Skipped: shift is dated after the import (the PC clock was probably wrong)",
         FindingCode.MissingName => "Employee first or last name is empty",
         FindingCode.DuplicateName => "Another employee has the same name",
         FindingCode.NoShifts => "Employee has no shifts",
@@ -114,11 +114,12 @@ public static class FindingInfo
         FindingCode.MissingName => "NULL_NAME",
         FindingCode.OutOfOrderShiftId => "OUT_OF_ORDER_ID",
         FindingCode.CrossesDstChange => "CROSSES_DST",
+        FindingCode.FutureTime => "FUTURE_TIME",
         _ => null,
     };
 
     /// <summary>Findings that mean no punches are created for the shift.</summary>
     public static bool Skips(FindingCode code) => code is
         FindingCode.DummyShift or FindingCode.ZeroLengthShift or FindingCode.OrphanShift or
-        FindingCode.MissingEmployeeId or FindingCode.MissingTimeIn;
+        FindingCode.MissingEmployeeId or FindingCode.MissingTimeIn or FindingCode.FutureTime;
 }

@@ -208,7 +208,7 @@ internal static class Program
             Console.WriteLine("  CANNOT IMPORT            the export has no matching copy of PunchClock.accdb");
         var future = plan.Findings.Count(f => f.Code == FindingCode.FutureTime);
         if (future > 0)
-            Console.WriteLine($"  CANNOT IMPORT            {future} shift(s) dated after today; see the report");
+            Console.WriteLine($"  Dated after today        {future} shift(s), skipped (raw rows kept); see the report");
         Console.WriteLine();
     }
 

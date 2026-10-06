@@ -166,7 +166,7 @@ public sealed class LegacyImporterTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Refuses_a_future_dated_shift_before_writing_anything()
+    public async Task Skips_a_future_dated_shift_keeping_its_raw_row_and_closes_the_batch()
     {
         _export.Employee(22, "Fay", "Ito")
             .Shift(60, 22, "2025-01-01 08:00:00", "2025-01-01 16:00:00")
@@ -174,10 +174,15 @@ public sealed class LegacyImporterTests : IAsyncLifetime
         _export.Build();
         var plan = ImportAnalyzer.Analyze(LegacyExport.Load(_export.Folder), Toronto);
 
-        var ex = await Assert.ThrowsAsync<ImportRefusedException>(() => Importer().ImportAsync(plan, _db.Database));
+        await Importer().ImportAsync(plan, _db.Database);
 
-        Assert.Contains("61", ex.Message);
-        Assert.Equal(0L, await _db.ScalarAsync("SELECT count(*) FROM import_batch"));
+        Assert.Equal(1L, await _db.ScalarAsync("SELECT count(*) FROM legacy_shift_raw WHERE legacy_shift_id = 61"));
+        Assert.Equal("SKIPPED", await _db.ScalarAsync("SELECT disposition FROM migration_issue WHERE legacy_pk = 61 AND code = 'FUTURE_TIME'"));
+        Assert.Equal(0L, await _db.ScalarAsync("SELECT count(*) FROM punch WHERE legacy_shift_id = 61"));
+        Assert.Equal(2L, await _db.ScalarAsync("SELECT count(*) FROM punch WHERE legacy_shift_id = 60"));
+        Assert.NotNull(await _db.ScalarAsync("SELECT completed_utc FROM import_batch"));
+        foreach (var view in new[] { "verify_chain_v", "verify_history_v", "verify_rules_v" })
+            Assert.Equal(0L, await _db.ScalarAsync($"SELECT count(*) FROM {view}"));
     }
 
     [Fact]
