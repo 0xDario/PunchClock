@@ -99,6 +99,36 @@ public sealed class SchemaMigratorTests : DatabaseTest
     }
 
     [Fact]
+    public async Task Startup_verifies_the_audit_log()
+    {
+        var id = await Db.AddEmployeeAsync();
+        await Db.Punches.PunchAsync(id, "1234", PunchDirection.In);
+
+        await PunchClockDatabase.OpenAndMigrateAsync(Db.Database.Path);
+    }
+
+    [Fact]
+    public async Task Startup_refuses_data_let_in_while_a_trigger_was_briefly_dropped()
+    {
+        var ana = await Db.AddEmployeeAsync(first: "Ana");
+        var ben = await Db.AddEmployeeAsync(first: "Ben");
+        var guard = await Db.ScalarAsync<string>("SELECT sql FROM sqlite_schema WHERE name = 'punch_bi';");
+
+        // Ana punches Ben in with the guard removed, then restores it byte for byte, so the
+        // schema fingerprint matches again; only the rules re-derived from the log notice.
+        await Db.ExecuteAsync(AuditActor.ForEmployee(ana), $"""
+            DROP TRIGGER punch_bi;
+            INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source)
+            VALUES ($ben, 'IN', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 0, 'kiosk');
+            {guard};
+            """, ("$ben", ben));
+        await new SchemaMigrator(Db.Database).MigrateAsync();
+
+        var ex = await Assert.ThrowsAsync<AuditIntegrityException>(() => PunchClockDatabase.OpenAndMigrateAsync(Db.Database.Path));
+        Assert.Contains(ex.Problems, p => p.StartsWith("verify_rules_v:", StringComparison.Ordinal) && p.Contains("punching employee"));
+    }
+
+    [Fact]
     public async Task Failed_migration_rolls_back_every_pending_script()
     {
         var migrations = SchemaMigrator.LoadEmbedded().Concat(
