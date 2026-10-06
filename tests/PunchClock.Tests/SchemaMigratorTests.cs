@@ -77,6 +77,48 @@ public sealed class SchemaMigratorTests : DatabaseTest
         await Assert.ThrowsAsync<SchemaMismatchException>(() => new SchemaMigrator(Db.Database).MigrateAsync());
     }
 
+    [Theory]
+    [InlineData("sqlitex_hide")]
+    [InlineData("schema_migrations")]
+    public async Task A_trigger_named_like_an_excluded_object_is_still_caught(string name)
+    {
+        // Would silently drop every wrong-PIN record, so the lockout never triggers.
+        await Db.ExecuteAsync(null, $"""
+            CREATE TRIGGER {name} BEFORE INSERT ON audit_log
+            WHEN NEW.action = 'AUTH_PIN_FAILED' BEGIN SELECT RAISE(IGNORE); END;
+            """);
+
+        await Assert.ThrowsAsync<SchemaMismatchException>(() => new SchemaMigrator(Db.Database).MigrateAsync());
+        await using var connection = await Db.Database.OpenAsync();
+        await Assert.ThrowsAsync<SchemaMismatchException>(() => SchemaMigrator.EnsureSchemaIntactAsync(connection, null));
+    }
+
+    [Fact]
+    public async Task A_database_created_from_crlf_scripts_matches_an_lf_build()
+    {
+        // A Windows checkout with autocrlf embeds CRLF scripts; another build may embed LF.
+        var crlf = SchemaMigrator.LoadEmbedded()
+            .Select(m => m with { Sql = m.Sql.ReplaceLineEndings("\r\n") })
+            .ToList();
+        await using var other = new TestDatabase();
+        await new SchemaMigrator(other.Database, crlf).MigrateAsync();
+
+        Assert.Empty(await new SchemaMigrator(other.Database).MigrateAsync());
+        await using var connection = await other.Database.OpenAsync();
+        await SchemaMigrator.EnsureSchemaIntactAsync(connection, null);
+        Assert.Equal(0, await other.ScalarAsync<long>("SELECT count(*) FROM sqlite_schema WHERE instr(sql, char(13)) > 0;"));
+    }
+
+    [Fact]
+    public async Task Migration_record_uses_the_database_clock()
+    {
+        // Written just before the audit event, on the same clock, so never later than it.
+        Assert.Equal(1, await Db.ScalarAsync<long>("""
+            SELECT count(*) FROM schema_migrations m JOIN audit_log a ON a.action = 'SCHEMA_MIGRATE'
+             WHERE json_extract(a.after_json, '$.version') = m.version AND m.applied_at_utc <= a.occurred_utc;
+            """));
+    }
+
     [Fact]
     public async Task Redefining_the_fingerprint_view_does_not_hide_tampering()
     {
@@ -192,13 +234,25 @@ public sealed class SchemaMigratorTests : DatabaseTest
     {
         await using var connection = await Db.Database.OpenAsync();
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT (SELECT foreign_keys FROM pragma_foreign_keys), (SELECT synchronous FROM pragma_synchronous), (SELECT trusted_schema FROM pragma_trusted_schema);";
+        command.CommandText = "SELECT (SELECT foreign_keys FROM pragma_foreign_keys), (SELECT synchronous FROM pragma_synchronous), (SELECT trusted_schema FROM pragma_trusted_schema), (SELECT recursive_triggers FROM pragma_recursive_triggers);";
         await using var reader = await command.ExecuteReaderAsync();
         await reader.ReadAsync();
 
         Assert.Equal(1, reader.GetInt64(0));
         Assert.Equal(2, reader.GetInt64(1)); // FULL
         Assert.Equal(1, reader.GetInt64(2));
+        Assert.Equal(1, reader.GetInt64(3));
+    }
+
+    [Fact]
+    public async Task Replace_cannot_delete_a_row_behind_the_delete_guard()
+    {
+        // REPLACE deletes the conflicting row; with recursive_triggers off that skips site_setting_bd.
+        var ex = await Assert.ThrowsAsync<SqliteException>(() => Db.ExecuteAsync(AuditActor.System,
+            "INSERT OR REPLACE INTO site_setting (key, value) VALUES ('time_zone_id', 'UTC');"));
+
+        Assert.Contains("deleted", ex.Message);
+        Assert.Equal(1, await Db.ScalarAsync<long>("SELECT count(*) FROM site_setting WHERE key = 'time_zone_id';"));
     }
 
     [Fact]

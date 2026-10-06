@@ -27,7 +27,7 @@ public sealed partial class MainViewModel(
     public partial bool IsBusy { get; set; }
 
     [ObservableProperty]
-    public partial string Message { get; set; } = "Select your name, enter your PIN, then choose Punch In or Punch Out.";
+    public partial string Message { get; set; } = Instructions;
 
     [ObservableProperty]
     public partial bool MessageIsError { get; set; }
@@ -40,6 +40,8 @@ public sealed partial class MainViewModel(
 
     public bool CanPunch => SelectedEmployee is not null && !IsBusy;
 
+    private const string Instructions = "Select your name, enter your PIN, then choose Punch In or Punch Out.";
+
     private const string SiteZoneMissing =
         "Punching is not available yet: an admin must set the site time zone (Admin, Site tab). Nothing was recorded.";
 
@@ -51,6 +53,11 @@ public sealed partial class MainViewModel(
         if (zoneId is null)
         {
             Show(SiteZoneMissing, isError: true);
+        }
+        else if (Message == SiteZoneMissing)
+        {
+            // An admin has just set the zone: punching works now.
+            Show(Instructions, isError: false);
         }
 
         Employees.Clear();
