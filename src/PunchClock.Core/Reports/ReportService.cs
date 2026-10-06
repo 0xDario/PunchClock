@@ -37,7 +37,7 @@ public sealed class ReportService(IPunchClockStore store)
             var bytes = Csv.Build(
                 ["employee_id", "legacy_id", "employee", "shifts", "minutes", "hours", "elapsed_hours", "shifts_not_counted"],
                 report.Lines.Select(l => (IReadOnlyList<object?>)
-                    [l.EmployeeId, l.LegacyId, l.Name, l.Shifts, l.Minutes, l.Hours, l.ElapsedHours, l.NotCounted]),
+                    [l.EmployeeId, l.LegacyId, l.Name, l.Shifts, l.Minutes, Hours(l.Hours), Hours(l.ElapsedHours), l.NotCounted]),
                 out var rows);
             return (bytes, rows);
         }, ct);
@@ -149,11 +149,24 @@ public sealed class ReportService(IPunchClockStore store)
     {
         EnsureAllowed(by, from, to);
         path = Path.GetFullPath(path);
-        await using var uow = await store.BeginAsync(ct);
-        var (bytes, rows) = await build(uow);
+        if (!string.Equals(Path.GetExtension(path), ".csv", StringComparison.OrdinalIgnoreCase))
+        {
+            // Never replace a database, backup or any other file the export was not meant for.
+            throw new ArgumentException("Exports are saved as .csv files.", nameof(path));
+        }
+
+        byte[] bytes;
+        int rows;
+        await using (var read = await store.BeginAsync(ct))
+        {
+            (bytes, rows) = await build(read);
+        }
+
         var sha256 = Convert.ToHexStringLower(SHA256.HashData(bytes));
 
-        // Written in full beside the target, then moved into place, so a reader never sees half a file.
+        // The file is written with no transaction open: a slow USB stick or network share must
+        // not hold the write lock the kiosk needs. Written in full beside the target, then moved
+        // into place, so a reader never sees half a file.
         var temporary = path + ".partial";
         try
         {
@@ -168,6 +181,7 @@ public sealed class ReportService(IPunchClockStore store)
         File.Move(temporary, path, overwrite: true);
         try
         {
+            await using var uow = await store.BeginAsync(ct);
             uow.ActAs(AuditActor.ForUser(by.Id));
             await uow.RecordEventAsync(AuditEvent.ReportExport, JsonSerializer.Serialize(new
             {
@@ -203,6 +217,9 @@ public sealed class ReportService(IPunchClockStore store)
             throw new ArgumentException("The period ends before it starts.", nameof(to));
         }
     }
+
+    /// <summary>Always two decimals, so a payroll import sees one column format.</summary>
+    private static string Hours(decimal hours) => hours.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
 
     private static DateTime From(DateOnly date) => date.ToDateTime(TimeOnly.MinValue);
 

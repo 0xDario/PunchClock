@@ -123,7 +123,7 @@ public sealed class ReportTests : DatabaseTest
         Assert.Equal(Convert.ToHexStringLower(SHA256.HashData(bytes)), result.Sha256);
         Assert.Equal(
             "employee_id,legacy_id,employee,shifts,minutes,hours,elapsed_hours,shifts_not_counted\r\n"
-            + $"{ada},,Ada Lovelace,1,480,8,8,0\r\n",
+            + $"{ada},,Ada Lovelace,1,480,8.00,8.00,0\r\n",
             Encoding.UTF8.GetString(bytes).TrimStart('﻿'));
         Assert.Equal(result.Sha256, await Db.ScalarAsync<string>("""
             SELECT json_extract(after_json, '$.sha256') FROM audit_log
@@ -159,6 +159,18 @@ public sealed class ReportTests : DatabaseTest
 
         await Assert.ThrowsAsync<UnauthorizedAccessException>(() => Db.Reports.PayReportAsync(migration, new(2026, 9, 1), new(2026, 9, 30)));
         await Assert.ThrowsAsync<ArgumentException>(() => Db.Reports.PayReportAsync(_manager, new(2026, 9, 30), new(2026, 9, 1)));
+    }
+
+    [Fact]
+    public async Task Exports_only_write_csv_files()
+    {
+        var other = Path.Combine(Db.Folder, "payroll.xlsx");
+        await File.WriteAllTextAsync(other, "keep");
+
+        await Assert.ThrowsAsync<ArgumentException>(() => Db.Reports.ExportPunchesAsync(_manager, new(2026, 9, 1), new(2026, 9, 30), other));
+
+        Assert.Equal("keep", await File.ReadAllTextAsync(other));
+        Assert.Equal(0, await Db.ScalarAsync<long>("SELECT count(*) FROM audit_log WHERE action = 'REPORT_EXPORT';"));
     }
 
     [Theory]
