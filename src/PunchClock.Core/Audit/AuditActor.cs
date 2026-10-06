@@ -34,4 +34,6 @@ public enum AuditEvent
     AuthLogout,
     AuthPinFailed,
     AppStart,
+    ReportExport,
+    Backup,
 }

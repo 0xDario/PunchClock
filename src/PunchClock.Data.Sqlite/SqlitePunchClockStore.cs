@@ -4,6 +4,7 @@ using PunchClock.Core.Audit;
 using PunchClock.Core.Employees;
 using PunchClock.Core.Persistence;
 using PunchClock.Core.Punches;
+using PunchClock.Core.Reports;
 
 namespace PunchClock.Data.Sqlite;
 
@@ -60,6 +61,8 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
             AuditEvent.AuthLogout => "AUTH_LOGOUT",
             AuditEvent.AuthPinFailed => "AUTH_PIN_FAILED",
             AuditEvent.AppStart => "APP_START",
+            AuditEvent.ReportExport => "REPORT_EXPORT",
+            AuditEvent.Backup => "BACKUP",
             _ => throw new ArgumentOutOfRangeException(nameof(auditEvent), auditEvent, null),
         });
         command.Parameters.AddWithValue("$detail", (object?)detailJson ?? DBNull.Value);
@@ -266,6 +269,83 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
         return (long)(await command.ExecuteScalarAsync(ct))!;
     }
 
+    public async Task<IReadOnlyList<ShiftRecord>> ListShiftsAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default)
+    {
+        await using var command = Command($"""
+            SELECT {Prefixed("i")}, {Prefixed("o")}
+              FROM shift_v s
+              JOIN punch i ON i.id = s.in_punch_id
+              LEFT JOIN punch o ON o.id = s.out_punch_id
+             WHERE s.in_utc >= $from AND s.in_utc < $to
+             ORDER BY s.employee_id, s.in_utc, s.in_punch_id;
+            """);
+        command.Parameters.AddWithValue("$from", SqliteTime.ToText(fromUtc));
+        command.Parameters.AddWithValue("$to", SqliteTime.ToText(toUtc));
+        return await ReadAllAsync(command, r =>
+        {
+            var punchIn = MapPunch(r);
+            return new ShiftRecord(punchIn.EmployeeId, punchIn, r.IsDBNull(PunchColumnCount) ? null : MapPunch(r, PunchColumnCount));
+        }, ct);
+    }
+
+    public async Task<IReadOnlyList<PunchExportRow>> ListPunchesForExportAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default)
+    {
+        await using var command = Command($"""
+            SELECT {Prefixed("p")}, e.first_name || ' ' || e.last_name, e.legacy_id, c.id, p.correction_id
+              FROM punch p
+              JOIN employee e ON e.id = p.employee_id
+              LEFT JOIN punch_correction c ON c.target_punch_id = p.id
+             WHERE p.occurred_utc >= $from AND p.occurred_utc < $to
+             ORDER BY e.last_name COLLATE NOCASE, e.first_name COLLATE NOCASE, p.employee_id, p.occurred_utc, p.direction = 'IN', p.id;
+            """);
+        command.Parameters.AddWithValue("$from", SqliteTime.ToText(fromUtc));
+        command.Parameters.AddWithValue("$to", SqliteTime.ToText(toUtc));
+        const int n = PunchColumnCount;
+        return await ReadAllAsync(command, r => new PunchExportRow(
+            MapPunch(r),
+            r.GetString(n),
+            r.IsDBNull(n + 1) ? null : r.GetInt64(n + 1),
+            r.IsDBNull(n + 2) ? null : r.GetInt64(n + 2),
+            r.IsDBNull(n + 3) ? null : r.GetInt64(n + 3)), ct);
+    }
+
+    public async Task<IReadOnlyList<CorrectionExportRow>> ListCorrectionsForExportAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default)
+    {
+        await using var command = Command($"""
+            SELECT c.id, c.created_utc, c.action, c.employee_id, e.first_name || ' ' || e.last_name, e.legacy_id,
+                   c.new_direction, c.new_occurred_utc, c.new_utc_offset_minutes, c.reason, u.username, u.display_name,
+                   {Prefixed("t")}
+              FROM punch_correction c
+              JOIN employee e ON e.id = c.employee_id
+              JOIN app_user u ON u.id = c.actor_user_id
+              LEFT JOIN punch t ON t.id = c.target_punch_id
+             WHERE c.created_utc >= $from AND c.created_utc < $to
+             ORDER BY c.created_utc, c.id;
+            """);
+        command.Parameters.AddWithValue("$from", SqliteTime.ToText(fromUtc));
+        command.Parameters.AddWithValue("$to", SqliteTime.ToText(toUtc));
+        return await ReadAllAsync(command, r => new CorrectionExportRow(
+            r.GetInt64(0),
+            SqliteTime.Parse(r.GetString(1)),
+            r.GetString(2) switch
+            {
+                "add" => CorrectionAction.Add,
+                "adjust" => CorrectionAction.Adjust,
+                "void" => CorrectionAction.Void,
+                var other => throw new InvalidDataException($"Unknown correction action '{other}'."),
+            },
+            r.GetInt64(3),
+            r.GetString(4),
+            r.IsDBNull(5) ? null : r.GetInt64(5),
+            r.IsDBNull(12) ? null : MapPunch(r, 12),
+            r.IsDBNull(6) ? null : FromDb(r.GetString(6)),
+            r.IsDBNull(7) ? null : SqliteTime.Parse(r.GetString(7)),
+            r.IsDBNull(8) ? null : r.GetInt32(8),
+            r.GetString(9),
+            r.GetString(10),
+            r.GetString(11)), ct);
+    }
+
     public async Task<AppUser?> FindUserAsync(long userId, CancellationToken ct = default)
     {
         await using var command = Command($"SELECT {UserColumns} FROM app_user WHERE id = $id;");
@@ -388,19 +468,30 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
         reader.GetInt64(5) == 1,
         reader.IsDBNull(6) ? null : reader.GetInt64(6));
 
-    private static Punch MapPunch(SqliteDataReader reader) => new(
-        reader.GetInt64(0),
-        reader.GetInt64(1),
-        reader.GetString(2) switch
-        {
-            "IN" => PunchDirection.In,
-            "OUT" => PunchDirection.Out,
-            var other => throw new InvalidDataException($"Unknown punch direction '{other}'."),
-        },
-        SqliteTime.Parse(reader.GetString(3)),
-        reader.GetInt32(4),
-        SqliteTime.Parse(reader.GetString(5)),
-        reader.GetString(6) switch
+    private const int PunchColumnCount = 7;
+
+    /// <summary><see cref="PunchColumns"/> qualified with a table alias, for joins.</summary>
+    private static string Prefixed(string alias) =>
+        string.Join(", ", PunchColumns.Split(", ").Select(c => $"{alias}.{c}"));
+
+    private static PunchDirection FromDb(string direction) => direction switch
+    {
+        "IN" => PunchDirection.In,
+        "OUT" => PunchDirection.Out,
+        var other => throw new InvalidDataException($"Unknown punch direction '{other}'."),
+    };
+
+    private static Punch MapPunch(SqliteDataReader reader) => MapPunch(reader, 0);
+
+    /// <param name="at">Ordinal of the first of the <see cref="PunchColumns"/>.</param>
+    private static Punch MapPunch(SqliteDataReader reader, int at) => new(
+        reader.GetInt64(at),
+        reader.GetInt64(at + 1),
+        FromDb(reader.GetString(at + 2)),
+        SqliteTime.Parse(reader.GetString(at + 3)),
+        reader.GetInt32(at + 4),
+        SqliteTime.Parse(reader.GetString(at + 5)),
+        reader.GetString(at + 6) switch
         {
             "kiosk" => PunchSource.Kiosk,
             "correction" => PunchSource.Correction,
