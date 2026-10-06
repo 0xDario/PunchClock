@@ -71,10 +71,10 @@ public partial class MainWindow : Window
                 return;
             }
 
-            if (admin.Role != UserRole.Admin)
+            if (admin.Role is not (UserRole.Admin or UserRole.Manager))
             {
                 await _services.Accounts.SignOutAsync(admin);
-                MessageBox.Show(this, "Only admins can open site administration.", "PunchClock", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show(this, "Only admins and managers can open administration.", "PunchClock", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
