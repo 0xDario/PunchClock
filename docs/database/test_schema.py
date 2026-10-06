@@ -55,14 +55,15 @@ def site_offset(utc):
 class Session:
     """A connection with pc_sha256, pc_ctx and pc_utc_offset registered, like the app's connection factory."""
 
-    def __init__(self, path, register=True):
+    def __init__(self, path, register=True, offset_fn=None, recursive_triggers=True):
         self.ctx = {}
         self.conn = sqlite3.connect(path, isolation_level=None)
         if register:
             self.conn.create_function("pc_sha256", 1, sha256_hex, deterministic=True)
             self.conn.create_function("pc_ctx", 1, self._ctx)
-            self.conn.create_function("pc_utc_offset", 2, utc_offset)
+            self.conn.create_function("pc_utc_offset", 2, offset_fn or utc_offset)
         self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute(f"PRAGMA recursive_triggers = {'ON' if recursive_triggers else 'OFF'}")
 
     def _ctx(self, name):
         if name in ("actor_kind", "actor_id", "client") and name not in self.ctx:
@@ -268,6 +269,16 @@ def main():
               "INSERT INTO punch (employee_id, direction, occurred_utc, utc_offset_minutes, source, correction_id) VALUES (?, 'IN', ?, ?, 'correction', ?)",
               (ana, new_in, off_in, corr), "UNIQUE")
 
+    # Paper timesheet keyed afternoon block first, then the morning block, back to back.
+    s.act("user", mgr)
+    day = [("IN", "2026-09-01T20:00:00.000Z"), ("OUT", "2026-09-02T00:00:00.000Z"),
+           ("IN", "2026-09-01T12:00:00.000Z"), ("OUT", "2026-09-01T20:00:00.000Z")]
+    for direction, ts in day:
+        s.x("INSERT INTO punch_correction (action, employee_id, new_direction, new_occurred_utc, new_utc_offset_minutes, reason, actor_user_id)"
+            " VALUES ('add', ?, ?, ?, ?, 'Keyed from the paper timesheet', ?)", (ben, direction, ts, site_offset(ts), mgr))
+    hours = s.one("SELECT sum(duration_sec) / 3600.0 FROM shift_v WHERE employee_id = ? AND work_date = '2026-09-01'", (ben,))[0]
+    check("back-to-back shifts at the same instant pair OUT before IN (12 h)", hours == 12.0, hours)
+
     # --- Employee self-service and deletes ---------------------------------------------
     s.act("employee", ben).x("UPDATE employee SET pin_hash = 'pbkdf2-sha256$b2' WHERE id = ?", (ben,))
     check("employee changes own PIN", s.one("SELECT pin_hash FROM employee WHERE id = ?", (ben,))[0].endswith("b2"))
@@ -277,6 +288,11 @@ def main():
     s.blocked("employee cannot change another PIN", "UPDATE employee SET pin_hash = 'h' WHERE id = ?", (ana,), "not authorized")
     check("PIN hash never enters the log",
           s.one("SELECT count(*) FROM audit_log WHERE after_json LIKE '%pbkdf2%' OR before_json LIKE '%pbkdf2%'")[0] == 0)
+    s.act("user", mgr).x("INSERT INTO employee (first_name, last_name, pin_hash) VALUES ('Zoe', 'Former', 'pbkdf2-sha256$z')")
+    zoe = s.one("SELECT max(id) FROM employee")[0]
+    s.x("UPDATE employee SET is_active = 0 WHERE id = ?", (zoe,))
+    s.act("employee", zoe).blocked("deactivated employee cannot change own PIN",
+                                   "UPDATE employee SET pin_hash = 'pbkdf2-sha256$z2' WHERE id = ?", (zoe,), "not authorized")
     s.act("user", admin).blocked("DELETE employee rejected", "DELETE FROM employee WHERE id = ?", (ben,), "cannot be deleted")
 
     # --- Audit log protection ----------------------------------------------------------
@@ -302,6 +318,20 @@ def main():
         (admin,))
     check("app event is sealed on insert",
           s.one("SELECT row_hash IS NOT NULL FROM audit_log WHERE seq = (SELECT max(seq) FROM audit_log)")[0] == 1)
+    s.blocked("table event with no image for the next row id rejected",
+              "INSERT INTO audit_log (actor_kind, actor_id, client, action, table_name, row_id)"
+              " SELECT 'user', ?, 'TEST-PC/1.0.0', 'INSERT', 'punch', (SELECT max(id) + 1 FROM punch)", (admin,), "current image")
+    s.blocked("INSERT OR REPLACE cannot delete a setting",
+              "INSERT OR REPLACE INTO site_setting (key, value) VALUES ('max_shift_hours', '20')", (), "cannot be deleted")
+    s.blocked("INSERT OR REPLACE cannot delete an account",
+              "INSERT OR REPLACE INTO app_user (username, display_name, role, password_hash) VALUES ('mgr', 'x', 'manager', 'h')", (), "cannot be deleted")
+    s.blocked("INSERT OR REPLACE cannot delete an employee",
+              "INSERT OR REPLACE INTO employee (id, first_name, last_name, pin_hash) VALUES (?, 'X', 'Y', 'h')", (ben,), "cannot be deleted")
+    no_rt = Session(db, recursive_triggers=False).act("user", admin)
+    no_rt.blocked("INSERT OR REPLACE cannot overwrite the audit head even without recursive_triggers",
+                  "INSERT OR REPLACE INTO audit_log (seq, actor_kind, actor_id, client, action)"
+                  " SELECT max(seq), 'user', ?, 'TEST-PC/1.0.0', 'APP_START' FROM audit_log", (admin,), "append-only")
+    no_rt.conn.close()
 
     # --- Legacy import (migration account) ---------------------------------------------
     s.act("user", 1).blocked("system account cannot import",
@@ -309,11 +339,11 @@ def main():
                              " VALUES ('PunchClock.accdb', ?, ?, 'Eastern Standard Time', '1.0', 1, 2)", ("a" * 64, "b" * 64), "migration account")
     s.act("user", 2, "Legacy import from PunchClock.accdb")
     s.x("INSERT INTO import_batch (source_file_name, source_sha256, manifest_sha256, source_time_zone_id, tool_version, manifest_employee_rows, manifest_shift_rows)"
-        " VALUES ('PunchClock.accdb', ?, ?, 'Eastern Standard Time', '1.0', 1, 4)", ("a" * 64, "b" * 64))
+        " VALUES ('PunchClock.accdb', ?, ?, 'Eastern Standard Time', '1.0', 1, 5)", ("a" * 64, "b" * 64))
     batch = s.one("SELECT max(id) FROM import_batch")[0]
     ev = s.one("SELECT actor_id, after_json FROM audit_log WHERE table_name = 'import_batch' AND row_id = ?", (batch,))
     check("one import audit event carries source SHA-256 and manifest counts",
-          ev[0] == 2 and "a" * 64 in ev[1] and '"manifest_shift_rows":4' in ev[1])
+          ev[0] == 2 and "a" * 64 in ev[1] and '"manifest_shift_rows":5' in ev[1])
     s.x("INSERT INTO legacy_employee_raw (import_batch_id, legacy_employee_id, first_name, last_name, is_active, pin_digits) VALUES (?, 7, 'Old', 'Timer', 1, 3)", (batch,))
     s.blocked("imported employee must start with a forced PIN reset",
               "INSERT INTO employee (legacy_id, first_name, last_name, pin_hash) VALUES (7, 'Old', 'Timer', 'pbkdf2-sha256$o')",
@@ -348,6 +378,11 @@ def main():
         " VALUES (?, 43, 7, '2023-03-12T02:30:00.000', '44997.1041666667', '2023-03-12T10:00:00.000', '44997.4166666667')", (batch,))
     s.x("INSERT INTO legacy_shift_raw (import_batch_id, legacy_shift_id, legacy_employee_id, time_in_local, time_in_oadate, time_out_local, time_out_oadate)"
         " VALUES (?, 44, 7, '2023-11-05T01:30:00.000', '45235.0625', '2023-11-05T09:00:00.000', '45235.375')", (batch,))
+    s.x("INSERT INTO legacy_shift_raw (import_batch_id, legacy_shift_id, legacy_employee_id, time_in_local, time_in_oadate, time_out_local, time_out_oadate)"
+        " VALUES (?, 45, 7, '2062-03-02T08:00:00.000', '59231.3333333333', '2062-03-02T16:30:00.000', '59231.6875')", (batch,))
+    s.blocked("legacy shift typed with a future year cannot be imported as punches", imp,
+              (old, "IN", "2062-03-02T13:00:00.000Z", -300, batch, 45), "in the future")
+    s.x("INSERT INTO migration_issue (import_batch_id, legacy_table, legacy_pk, code, disposition) VALUES (?, 'Shift', 45, 'FUTURE_TIME', 'SKIPPED')", (batch,))
     s.blocked("batch cannot close while a raw shift has no punches or SKIPPED issue",
               "UPDATE import_batch SET completed_utc = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?", (batch,), "SKIPPED issue")
     s.blocked("spring-forward shift moved one hour needs its DST_INVALID issue first", imp,
@@ -572,15 +607,60 @@ def main():
     t.x(s_trigger("punch_correction_bi"))
     p = t.problems()
     rules = {(r[0], r[1]) for r in p["verify_rules_v"]}
-    check("admission bypass: fingerprint matches and the other views stay clean",
+    check("admission bypass: fingerprint matches; chain, drift and continuity stay clean",
           t.one("SELECT fingerprint FROM schema_fingerprint_v")[0] == fp
-          and not any(p[v] for v in VERIFY_VIEWS if v != "verify_rules_v"), p)
+          and not any(p[v] for v in ("verify_chain_v", "verify_drift_v", "verify_continuity_v")), p)
     check("admission bypass: kiosk punch for another employee flagged", ("punch", for_ben) in rules)
     check("admission bypass: backdated kiosk punch flagged", ("punch", backdated) in rules)
     check("admission bypass: phantom import punch by a retired account into a closed batch flagged",
           ("punch", phantom) in rules
           and len([r for r in p["verify_rules_v"] if r[1] == phantom]) == 2)
     check("admission bypass: admin self-correction flagged", ("punch_correction", self_fix) in rules)
+
+    t = tampered("inactive_pin")
+    t.x("DROP TRIGGER employee_bu")
+    t.act("employee", zoe).x("UPDATE employee SET pin_hash = 'pbkdf2-sha256$z3' WHERE id = ?", (zoe,))
+    t.act("user", admin).x(s_trigger("employee_bu"))
+    check("deactivated employee's PIN change with the rule dropped: flagged",
+          ("employee", zoe) in {(r[0], r[1]) for r in t.problems()["verify_rules_v"]})
+
+    t = tampered("hidden_trigger")
+    t.x("CREATE TRIGGER sqlitex_hide BEFORE INSERT ON audit_log WHEN NEW.action = 'AUTH_PIN_FAILED' BEGIN SELECT RAISE(IGNORE); END")
+    check("trigger named like sqlite_ (sqlitex_): fingerprint changes", t.one("SELECT fingerprint FROM schema_fingerprint_v")[0] != fp)
+    t.x("DROP TRIGGER sqlitex_hide")
+    t.x("CREATE TRIGGER schema_migrations BEFORE INSERT ON audit_log WHEN NEW.action = 'AUTH_PIN_FAILED' BEGIN SELECT RAISE(IGNORE); END")
+    check("trigger named schema_migrations: fingerprint changes", t.one("SELECT fingerprint FROM schema_fingerprint_v")[0] != fp)
+    t.x("DROP TRIGGER schema_migrations")
+    t.x("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)")
+    check("the migration runner's own table stays outside the fingerprint", t.one("SELECT fingerprint FROM schema_fingerprint_v")[0] == fp)
+
+    t = tampered("reopen_batch")
+    t.act("user", 2)
+    t.x("DROP TRIGGER import_batch_bu")
+    t.x("DROP TRIGGER audit_log_bi")
+    t.x("UPDATE import_batch SET completed_utc = NULL WHERE id = ?", (batch,))
+    t.x(s_trigger("import_batch_bu"))
+    t.x(s_trigger("audit_log_bi"))
+    t.x("DROP TRIGGER legacy_shift_raw_bi")
+    t.x("INSERT INTO legacy_shift_raw (import_batch_id, legacy_shift_id, legacy_employee_id) VALUES (?, 999, 7)", (batch,))
+    t.x(s_trigger("legacy_shift_raw_bi"))
+    hist = {r[3] for r in t.problems()["verify_history_v"]}
+    check("closed batch reopened and extended: flagged",
+          t.one("SELECT fingerprint FROM schema_fingerprint_v")[0] == fp
+          and {"closed import batch changed again", "import evidence added after its batch closed"} <= hist, hist)
+
+    def shifted_offset(zone_id, utc):
+        o = utc_offset(zone_id, utc)
+        return None if o is None else o + 60
+    path = os.path.join(work, "tz_update.db")
+    shutil.copy(db, path)
+    t = Session(path, offset_fn=shifted_offset)
+    p = t.problems()
+    check("time zone data update: payroll rules stay clean (offsets are not re-judged there)", not p["verify_rules_v"], p)
+    check("time zone data update: offsets reported in the warning view only",
+          bool(t.x("SELECT * FROM verify_offset_v").fetchall()))
+    check("current time zone data: offset warning view is empty",
+          not Session(db).x("SELECT * FROM verify_offset_v").fetchall())
 
     t = tampered("import_gaps")
     t.act("user", 2)
@@ -589,7 +669,7 @@ def main():
     leaked = t.one("SELECT id FROM employee WHERE legacy_id = 99")[0]
     t.x(s_trigger("employee_bi"))
     t.x("DROP TRIGGER legacy_shift_raw_bi")
-    t.x("INSERT INTO legacy_shift_raw (import_batch_id, legacy_shift_id, legacy_employee_id, time_in_local) VALUES (?, 45, 7, '2023-03-06T09:00:00.000')", (batch,))
+    t.x("INSERT INTO legacy_shift_raw (import_batch_id, legacy_shift_id, legacy_employee_id, time_in_local) VALUES (?, 46, 7, '2023-03-06T09:00:00.000')", (batch,))
     t.x(s_trigger("legacy_shift_raw_bi"))
     rules = {(r[0], r[1]) for r in t.problems()["verify_rules_v"]}
     check("imported employee without a forced PIN reset flagged", ("employee", leaked) in rules)
