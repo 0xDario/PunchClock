@@ -89,6 +89,18 @@ public partial class MainWindow : Window
                 return;
             }
 
+            if (admin.MustChangePassword)
+            {
+                // An admin chose this password, so it is not yet only this person's.
+                if (new ChangePasswordWindow(_services.Accounts, admin, forced: true) { Owner = this }.ShowDialog() != true)
+                {
+                    await _services.Accounts.SignOutAsync(admin);
+                    return;
+                }
+
+                admin = admin with { MustChangePassword = false };
+            }
+
             new AdminWindow(_services, admin) { Owner = this }.ShowDialog();
             await _viewModel.LoadAsync();
         }

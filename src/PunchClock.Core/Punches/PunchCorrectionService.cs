@@ -63,7 +63,10 @@ public sealed class PunchCorrectionService(IPunchClockStore store)
         AppUser by, long employeeId, PunchDirection direction, DateTime siteLocalTime, string reason, CancellationToken ct = default) =>
         ApplyAsync(by, employeeId, targetPunchId: null, CorrectionAction.Add, direction, siteLocalTime, reason, ct);
 
-    /// <summary>Supersedes a punch with one at a different time or direction.</summary>
+    /// <summary>
+    /// Supersedes a punch with one at a different time or direction. In the repeated hour when
+    /// clocks go back, the wall time keeps the occurrence the original punch was in.
+    /// </summary>
     public Task<CorrectionResult> AdjustAsync(
         AppUser by, long punchId, PunchDirection direction, DateTime siteLocalTime, string reason, CancellationToken ct = default) =>
         ApplyAsync(by, employeeId: null, punchId, CorrectionAction.Adjust, direction, siteLocalTime, reason, ct);
@@ -88,6 +91,7 @@ public sealed class PunchCorrectionService(IPunchClockStore store)
 
         await using var uow = await store.BeginAsync(ct);
 
+        int? originalOffset = null;
         if (targetPunchId is { } punchId)
         {
             var target = await uow.FindEffectivePunchAsync(punchId, ct);
@@ -97,6 +101,7 @@ public sealed class PunchCorrectionService(IPunchClockStore store)
             }
 
             employeeId = target.EmployeeId;
+            originalOffset = target.UtcOffsetMinutes;
         }
         else if (await uow.FindEmployeeAsync(employeeId!.Value, ct) is null)
         {
@@ -118,7 +123,7 @@ public sealed class PunchCorrectionService(IPunchClockStore store)
                 return CorrectionResult.SiteTimeZoneNotSet;
             }
 
-            if (ToUtc(local, zone) is not { } utc)
+            if (ToUtc(local, zone, originalOffset) is not { } utc)
             {
                 return CorrectionResult.InvalidLocalTime;
             }
@@ -141,9 +146,10 @@ public sealed class PunchCorrectionService(IPunchClockStore store)
 
     /// <summary>
     /// Site wall time to UTC, to the millisecond. Null for a time skipped by a daylight-saving
-    /// change. A repeated time (the hour when clocks go back) takes its first occurrence.
+    /// change. A repeated time (the hour when clocks go back) takes the occurrence whose offset is
+    /// <paramref name="preferredOffsetMinutes"/>, such as the punch being corrected, else the first.
     /// </summary>
-    public static DateTimeOffset? ToUtc(DateTime siteLocalTime, TimeZoneInfo zone)
+    public static DateTimeOffset? ToUtc(DateTime siteLocalTime, TimeZoneInfo zone, int? preferredOffsetMinutes = null)
     {
         var local = DateTime.SpecifyKind(siteLocalTime, DateTimeKind.Unspecified);
         local = local.AddTicks(-(local.Ticks % TimeSpan.TicksPerMillisecond));
@@ -152,7 +158,15 @@ public sealed class PunchCorrectionService(IPunchClockStore store)
             return null;
         }
 
-        var offset = zone.IsAmbiguousTime(local) ? zone.GetAmbiguousTimeOffsets(local).Max() : zone.GetUtcOffset(local);
+        var offset = zone.GetUtcOffset(local);
+        if (zone.IsAmbiguousTime(local))
+        {
+            var offsets = zone.GetAmbiguousTimeOffsets(local);
+            offset = offsets.Any(o => o.TotalMinutes == preferredOffsetMinutes)
+                ? TimeSpan.FromMinutes(preferredOffsetMinutes!.Value)
+                : offsets.Max();
+        }
+
         return new DateTimeOffset(local, offset).ToUniversalTime();
     }
 }
