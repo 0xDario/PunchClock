@@ -61,25 +61,28 @@ public sealed record ReconciliationTotals(
             })
             .ToList();
 
+        // Month totals follow the old report on the raw rows: every closed shift of an existing
+        // employee counts, including the zero-length rows the importer skips.
         var byMonth = new List<MonthTotals>();
         foreach (var e in employees)
         {
             var closed = shifts
-                .Where(s => ReferenceEquals(s.Employee, e) && s.WallClockDuration is not null)
+                .Where(s => ReferenceEquals(s.Employee, e) && s.Source.TimeIn is not null && s.Source.TimeOut is not null)
+                .Select(s => (In: s.Source.TimeIn!.Value, Out: s.Source.TimeOut!.Value))
                 .ToList();
-            foreach (var month in closed.Select(s => MonthStart(s.In!.Value.Local)).Distinct().Order())
+            foreach (var month in closed.Select(s => MonthStart(s.In)).Distinct().Order())
             {
                 var next = month.AddMonths(1);
-                var started = closed.Where(s => MonthStart(s.In!.Value.Local) == month).ToList();
-                var legacy = started.Where(s => s.Out!.Value.Local < next).ToList();
+                var started = closed.Where(s => MonthStart(s.In) == month).ToList();
+                var legacy = started.Where(s => s.Out < next).ToList();
                 byMonth.Add(new MonthTotals(
                     e.LegacyEmployeeId,
                     DisplayName(e),
                     month.ToString("yyyy-MM", CultureInfo.InvariantCulture),
                     legacy.Count,
-                    Sum(legacy.Select(s => s.WallClockDuration)),
+                    Sum(legacy.Select(s => (TimeSpan?)(s.Out - s.In))),
                     started.Count,
-                    Sum(started.Select(s => s.WallClockDuration))));
+                    Sum(started.Select(s => (TimeSpan?)(s.Out - s.In)))));
             }
         }
 

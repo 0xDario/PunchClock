@@ -149,6 +149,11 @@ public sealed class ImportAnalyzerTests : IDisposable
         Assert.Equal(-240, summer.In.Value.UtcOffsetMinutes);
         Assert.Empty(summer.Flags);
 
+        // 02:30 is read with the pre-gap offset (07:30Z) and stored with the offset in force then.
+        var gap = plan.Shifts.Single(s => s.Source.ShiftId == 13);
+        Assert.Equal(new DateTime(2026, 3, 8, 7, 30, 0, DateTimeKind.Utc), gap.In!.Value.Utc);
+        Assert.Equal(-240, gap.In.Value.UtcOffsetMinutes);
+
         var spring = plan.Shifts.Single(s => s.Source.ShiftId == 10);
         Assert.Equal(TimeSpan.FromHours(8), spring.WallClockDuration);
         Assert.Equal(TimeSpan.FromHours(7), spring.ElapsedDuration);
@@ -188,6 +193,7 @@ public sealed class ImportAnalyzerTests : IDisposable
     public void Month_totals_reproduce_the_old_report_dropping_shifts_that_end_after_the_last_day()
     {
         _export.Employee(1, "Ann", "Lee")
+            .Shift(9, 1, "2025-01-06 08:00:00", "2025-01-06 08:00:00")    // dummy: skipped, still a report row
             .Shift(10, 1, "2025-01-15 08:00:00", "2025-01-15 16:00:00")
             .Shift(11, 1, "2025-01-31 22:00:00", "2025-02-01 02:00:00")
             .Shift(12, 1, "2025-02-03 08:00:00", "2025-02-03 12:00:00")
@@ -197,6 +203,7 @@ public sealed class ImportAnalyzerTests : IDisposable
 
         var jan = plan.Totals.ByMonth.Single(m => m.Month == "2025-01");
         Assert.Equal(8, jan.LegacyReport.TotalHours);
+        Assert.Equal(2, jan.LegacyReportShifts);
         Assert.Equal(12, jan.ByStartMonth.TotalHours);
         var feb = plan.Totals.ByMonth.Single(m => m.Month == "2025-02");
         Assert.Equal(4, feb.LegacyReport.TotalHours);
