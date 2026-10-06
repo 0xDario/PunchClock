@@ -3,6 +3,7 @@ using PunchClock.Core.Accounts;
 using PunchClock.Core.Audit;
 using PunchClock.Core.Employees;
 using PunchClock.Core.Punches;
+using PunchClock.Core.Reports;
 using PunchClock.Core.Security;
 using PunchClock.Core.Site;
 using PunchClock.Data.Sqlite;
@@ -27,7 +28,12 @@ public sealed class TestDatabase : IAsyncLifetime
         Accounts = new AccountService(Store, FastHasher);
         Site = new SiteSettingsService(Store);
         Corrections = new PunchCorrectionService(Store);
+        Reports = new ReportService(Store);
+        Maintenance = new DatabaseMaintenance(Database, Store);
     }
+
+    /// <summary>Where a test writes exports and backups; deleted with the database.</summary>
+    public string Folder => _directory;
 
     public SqliteDatabase Database { get; }
 
@@ -42,6 +48,10 @@ public sealed class TestDatabase : IAsyncLifetime
     public SiteSettingsService Site { get; }
 
     public PunchCorrectionService Corrections { get; }
+
+    public ReportService Reports { get; }
+
+    public DatabaseMaintenance Maintenance { get; }
 
     public ValueTask InitializeAsync() => InitializeAsync(TimeZoneInfo.Utc.Id);
 
@@ -165,7 +175,7 @@ public abstract class DatabaseTest : IAsyncLifetime
     /// <summary>The site zone the database starts with; null to start unset like a fresh install.</summary>
     protected virtual string? SiteZone => TimeZoneInfo.Utc.Id;
 
-    public ValueTask InitializeAsync() => Db.InitializeAsync(SiteZone);
+    public virtual ValueTask InitializeAsync() => Db.InitializeAsync(SiteZone);
 
     public ValueTask DisposeAsync() => Db.DisposeAsync();
 }

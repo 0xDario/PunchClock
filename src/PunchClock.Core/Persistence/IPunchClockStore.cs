@@ -75,6 +75,15 @@ public interface IPunchClockUnitOfWork : IAsyncDisposable
 
     Task<long> AddCorrectionAsync(NewCorrection correction, CancellationToken ct = default);
 
+    /// <summary>Shifts (<c>shift_v</c>) of every employee whose IN is in [<paramref name="fromUtc"/>, <paramref name="toUtc"/>).</summary>
+    Task<IReadOnlyList<Reports.ShiftRecord>> ListShiftsAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default);
+
+    /// <summary>Every punch, superseded ones included, with time in [<paramref name="fromUtc"/>, <paramref name="toUtc"/>).</summary>
+    Task<IReadOnlyList<Reports.PunchExportRow>> ListPunchesForExportAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default);
+
+    /// <summary>Corrections made in [<paramref name="fromUtc"/>, <paramref name="toUtc"/>).</summary>
+    Task<IReadOnlyList<Reports.CorrectionExportRow>> ListCorrectionsForExportAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default);
+
     Task<AppUser?> FindUserAsync(long userId, CancellationToken ct = default);
 
     Task<AppUser?> FindUserByUsernameAsync(string username, CancellationToken ct = default);

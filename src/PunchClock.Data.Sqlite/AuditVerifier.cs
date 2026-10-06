@@ -1,4 +1,5 @@
 using System.Globalization;
+using Microsoft.Data.Sqlite;
 
 namespace PunchClock.Data.Sqlite;
 
@@ -35,10 +36,18 @@ public static class AuditVerifier
     public static Task<IReadOnlyList<string>> FindWarningsAsync(SqliteDatabase database, CancellationToken ct = default) =>
         RunAsync(database, WarningViews, ct);
 
+    /// <summary>The gating views on an already configured connection, such as a backup opened read-only.</summary>
+    internal static Task<IReadOnlyList<string>> FindProblemsAsync(SqliteConnection connection, CancellationToken ct) =>
+        RunAsync(connection, Views, ct);
+
     private static async Task<IReadOnlyList<string>> RunAsync(SqliteDatabase database, IReadOnlyList<string> views, CancellationToken ct)
     {
         await using var connection = await database.OpenAsync(ct: ct);
+        return await RunAsync(connection, views, ct);
+    }
 
+    private static async Task<IReadOnlyList<string>> RunAsync(SqliteConnection connection, IReadOnlyList<string> views, CancellationToken ct)
+    {
         // One read snapshot for all views; under WAL it does not block kiosk writes.
         await using var transaction = connection.BeginTransaction(deferred: true);
         var problems = new List<string>();
