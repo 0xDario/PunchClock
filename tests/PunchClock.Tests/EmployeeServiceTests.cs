@@ -243,6 +243,20 @@ public sealed class EmployeeServiceTests : DatabaseTest
             "SELECT count(*) FROM audit_log WHERE action = 'AUTH_PIN_FAILED' AND actor_id = $id;", ("$id", id)));
     }
 
+    [Theory]
+    [InlineData("000")]
+    [InlineData("0000")]
+    public async Task Imported_all_zero_pin_stored_as_0_still_works(string typed)
+    {
+        // Access stored 000 as 0, which the kiosk's 3-digit minimum would never let anyone type.
+        var id = await AddImportedEmployeeAsync("0");
+
+        Assert.Equal(PunchRejection.PinChangeRequired, (await Db.Punches.PunchAsync(id, typed, PunchDirection.In)).Rejection);
+        Assert.Equal(PinChangeResult.Changed, await Db.Employees.ChangeOwnPinAsync(id, typed, "5678"));
+        Assert.Equal(0, await Db.ScalarAsync<long>(
+            "SELECT count(*) FROM audit_log WHERE action = 'AUTH_PIN_FAILED' AND actor_id = $id;", ("$id", id)));
+    }
+
     [Fact]
     public async Task Leading_zero_fallback_is_only_for_imported_pins_and_counts_one_failure()
     {
