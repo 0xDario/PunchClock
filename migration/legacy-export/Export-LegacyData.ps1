@@ -272,12 +272,14 @@ if ($candidates.Count -eq 0) { $candidates.Add('Microsoft.ACE.OLEDB.16.0'); $can
 
 $provider = $null
 foreach ($p in $candidates) {
-    # The builder quotes the password, so ; and = in it are safe.
+    # The builder quotes the password, so ; and = in it are safe. Cast every value:
+    # the builder's setters cast to IConvertible and PowerShell can hand them the
+    # PSObject wrapper (Join-Path output), which fails.
     $csb = New-Object Data.OleDb.OleDbConnectionStringBuilder
-    $csb.Provider = $p
-    $csb.DataSource = $snapshot
+    $csb.Provider = [string]$p
+    $csb.DataSource = [string]$snapshot
     $csb['Mode'] = 'Read'
-    $csb['Jet OLEDB:Database Password'] = $Password
+    $csb['Jet OLEDB:Database Password'] = [string]$Password
     $c = New-Object Data.OleDb.OleDbConnection($csb.ConnectionString)
     try {
         $c.Open()
