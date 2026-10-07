@@ -193,6 +193,20 @@ function Get-RowValue($Row, [string]$Name) {
     $null
 }
 
+function New-AceConnectionString([string]$Provider, [string]$DataSource, [string]$Password) {
+    # Set every key through the indexer, by its OLE DB keyword name. PowerShell routes
+    # $builder.DataSource = ... to the dictionary key "DataSource" (no space), which ACE does
+    # not know: it fails with "Could not find installable ISAM". The builder quotes values,
+    # so spaces, ; and quotes in the path or password are safe. Typed parameters also turn
+    # PowerShell's PSObject wrappers into plain strings.
+    $builder = New-Object Data.Common.DbConnectionStringBuilder
+    $builder['Provider'] = $Provider
+    $builder['Data Source'] = $DataSource
+    $builder['Mode'] = 'Read'
+    $builder['Jet OLEDB:Database Password'] = $Password
+    $builder.ConnectionString
+}
+
 $script:Conn = $null
 $script:CleanupDir = $null
 
@@ -272,15 +286,8 @@ if ($candidates.Count -eq 0) { $candidates.Add('Microsoft.ACE.OLEDB.16.0'); $can
 
 $provider = $null
 foreach ($p in $candidates) {
-    # The builder quotes the password, so ; and = in it are safe. Cast every value:
-    # the builder's setters cast to IConvertible and PowerShell can hand them the
-    # PSObject wrapper (Join-Path output), which fails.
-    $csb = New-Object Data.OleDb.OleDbConnectionStringBuilder
-    $csb.Provider = [string]$p
-    $csb.DataSource = [string]$snapshot
-    $csb['Mode'] = 'Read'
-    $csb['Jet OLEDB:Database Password'] = [string]$Password
-    $c = New-Object Data.OleDb.OleDbConnection($csb.ConnectionString)
+    $connectionString = New-AceConnectionString $p $snapshot $Password
+    $c = New-Object Data.OleDb.OleDbConnection($connectionString)
     try {
         $c.Open()
         $script:Conn = $c
