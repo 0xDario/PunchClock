@@ -524,12 +524,13 @@ $manifest = [ordered]@{
         observes_dst = $tz.SupportsDaylightSavingTime
         source = $tzSource
     }
-    tables = @($tableResults)
+    # ToArray, not @(): @() on a List[object] throws "Argument types do not match" (PowerShell bug).
+    tables = $tableResults.ToArray()
     linked_tables = @($linkedTables)
     relationships = @($relations)
     queries = [ordered]@{ file = 'access.queries.csv'; count = $queries.Count }
-    warnings = @($warnings)
-    failures = @($failures)
+    warnings = $warnings.ToArray()
+    failures = $failures.ToArray()
 }
 [IO.File]::WriteAllText((Join-Path $OutDir 'manifest.json'), ($manifest | ConvertTo-Json -Depth 8), $script:Utf8NoBom)
 
