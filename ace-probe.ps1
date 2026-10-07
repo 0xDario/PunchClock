@@ -1,24 +1,25 @@
-# Temporary CI probe: which GetOleDbSchemaTable calls does ACE accept?
+# Temporary CI probe: replay the exporter's schema calls step by step.
+Set-StrictMode -Version 2.0
+. (Join-Path $PSScriptRoot 'migration\legacy-export\Export-LegacyData.ps1')
 $src = (Resolve-Path 'PunchClock/PunchClock.accdb').ProviderPath
-$G = [Data.OleDb.OleDbSchemaGuid]
-foreach ($mode in @('Read', $null, 'Share Deny None', 'Read|Share Deny None')) {
-    $b = New-Object Data.Common.DbConnectionStringBuilder
-    $b['Provider'] = 'Microsoft.ACE.OLEDB.16.0'; $b['Data Source'] = $src
-    if ($mode) { $b['Mode'] = $mode }
-    $b['Jet OLEDB:Database Password'] = 'admin123'
-    $c = New-Object Data.OleDb.OleDbConnection($b.ConnectionString)
-    try { $c.Open() } catch { Write-Host "mode=$mode open FAILED: $($_.Exception.GetBaseException().Message)"; continue }
-    foreach ($case in @(
-        @{ n = 'Tables 4 nulls'; g = $G::Tables; r = [object[]]@($null, $null, $null, $null) },
-        @{ n = 'Tables null'; g = $G::Tables; r = $null },
-        @{ n = 'Tables empty'; g = $G::Tables; r = [object[]]@() },
-        @{ n = 'Tables TABLE'; g = $G::Tables; r = [object[]]@($null, $null, $null, 'TABLE') },
-        @{ n = 'Columns Shift'; g = $G::Columns; r = [object[]]@($null, $null, 'Shift', $null) },
-        @{ n = 'Primary_Keys Shift'; g = $G::Primary_Keys; r = [object[]]@($null, $null, 'Shift') })) {
-        try { $t = $c.GetOleDbSchemaTable($case.g, $case.r); Write-Host "mode=$mode $($case.n): ok $($t.Rows.Count) rows" }
-        catch { Write-Host "mode=$mode $($case.n): FAILED $($_.Exception.GetBaseException().Message)" }
+function Try-Step([string]$Name, [scriptblock]$Body) {
+    try { $r = & $Body; Write-Host "$Name : ok $r" } catch { Write-Host "$Name : FAILED $($_.Exception.GetBaseException().GetType().Name) $($_.Exception.GetBaseException().Message)" }
+}
+foreach ($enum in $false, $true) {
+    if ($enum) { Try-Step 'enumerator' { @((New-Object Data.OleDb.OleDbEnumerator).GetElements().Rows).Count } }
+    $c = New-Object Data.OleDb.OleDbConnection((New-AceConnectionString 'Microsoft.ACE.OLEDB.16.0' $src 'admin123'))
+    $c.Open()
+    $OLE = [Data.OleDb.OleDbSchemaGuid]
+    Try-Step "enum=$enum Get-SchemaRows Tables" { @(Get-SchemaRows $c $OLE::Tables @($null, $null, $null, $null)).Count }
+    Try-Step "enum=$enum direct Tables" { $c.GetOleDbSchemaTable($OLE::Tables, [object[]]@($null, $null, $null, $null)).Rows.Count }
+    $rows = @(Get-SchemaRows $c $OLE::Tables $null)
+    foreach ($r in $rows) { Write-Host "  table $($r['TABLE_NAME']) type $($r['TABLE_TYPE'])" }
+    foreach ($t in 'Employee', 'Shift') {
+        Try-Step "enum=$enum Get-SchemaRows Columns $t" { @(Get-SchemaRows $c $OLE::Columns @($null, $null, $t, $null)).Count }
+        Try-Step "enum=$enum Get-SchemaRows Primary_Keys $t" { @(Get-SchemaRows $c $OLE::Primary_Keys @($null, $null, $t)).Count }
     }
-    try { $cmd = $c.CreateCommand(); $cmd.CommandText = 'SELECT COUNT(*) FROM [Shift]'; Write-Host "mode=$mode count: $($cmd.ExecuteScalar())" }
-    catch { Write-Host "mode=$mode count FAILED: $($_.Exception.GetBaseException().Message)" }
+    Try-Step "enum=$enum Foreign_Keys" { @(Get-SchemaRows $c $OLE::Foreign_Keys $null).Count }
+    Try-Step "enum=$enum Views" { @(Get-SchemaRows $c $OLE::Views $null).Count }
+    Try-Step "enum=$enum Procedures" { @(Get-SchemaRows $c $OLE::Procedures $null).Count }
     $c.Dispose()
 }
