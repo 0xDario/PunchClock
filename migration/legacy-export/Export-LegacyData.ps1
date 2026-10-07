@@ -184,13 +184,45 @@ function Read-ControlTotals([Data.IDataReader]$Reader, [object[]]$Columns) {
     @{ Rows = [long]$Reader['rows_']; Columns = $totals }
 }
 
+function ConvertTo-SchemaRestrictions([object[]]$Restrictions) {
+    # Values that came through a pipeline (table names from the Tables rowset) arrive as
+    # PSObject wrappers, and PowerShell does not unwrap elements of an array passed to a
+    # .NET method. OLE DB cannot marshal a PSObject and fails with "The parameter is
+    # incorrect", so pass plain strings. Restrictions are always strings or null.
+    if ($null -eq $Restrictions) { return ,$null }
+    $plain = New-Object object[] $Restrictions.Length
+    for ($i = 0; $i -lt $Restrictions.Length; $i++) {
+        if ($null -ne $Restrictions[$i]) { $plain[$i] = [string]$Restrictions[$i] }
+    }
+    ,$plain
+}
+
 function Get-SchemaRows($Connection, [guid]$Schema, [object[]]$Restrictions) {
-    @($Connection.GetOleDbSchemaTable($Schema, $Restrictions).Rows)
+    try { @($Connection.GetOleDbSchemaTable($Schema, (ConvertTo-SchemaRestrictions $Restrictions)).Rows) }
+    catch {
+        $name = @([Data.OleDb.OleDbSchemaGuid].GetFields() | Where-Object { $_.GetValue($null) -eq $Schema } | ForEach-Object { $_.Name }) -join '/'
+        $what = if ($null -eq $Restrictions) { 'none' } else { (@($Restrictions | ForEach-Object { if ($null -eq $_) { '*' } else { "'$_'" } }) -join ', ') }
+        throw "Reading the $name schema (restrictions: $what) failed: $($_.Exception.GetBaseException().Message)"
+    }
 }
 
 function Get-RowValue($Row, [string]$Name) {
     if ($Row.Table.Columns.Contains($Name) -and -not ($Row[$Name] -is [DBNull])) { return $Row[$Name] }
     $null
+}
+
+function New-AceConnectionString([string]$Provider, [string]$DataSource, [string]$Password) {
+    # Set every key through the indexer, by its OLE DB keyword name. PowerShell routes
+    # $builder.DataSource = ... to the dictionary key "DataSource" (no space), which ACE does
+    # not know: it fails with "Could not find installable ISAM". The builder quotes values,
+    # so spaces, ; and quotes in the path or password are safe. Typed parameters also turn
+    # PowerShell's PSObject wrappers into plain strings.
+    $builder = New-Object Data.Common.DbConnectionStringBuilder
+    $builder['Provider'] = $Provider
+    $builder['Data Source'] = $DataSource
+    $builder['Mode'] = 'Read'
+    $builder['Jet OLEDB:Database Password'] = $Password
+    $builder.ConnectionString
 }
 
 $script:Conn = $null
@@ -203,6 +235,7 @@ function Exit-WithError([int]$Code, [string]$Message) {
     if ($script:Conn) { $script:Conn.Dispose(); $script:Conn = $null }
     if ($script:CleanupDir -and (Test-Path -LiteralPath $script:CleanupDir)) {
         [Data.OleDb.OleDbConnection]::ReleaseObjectPool()
+        [GC]::Collect(); [GC]::WaitForPendingFinalizers()  # let ACE drop its lock on the copy
         Remove-Item -LiteralPath $script:CleanupDir -Recurse -Force -ErrorAction SilentlyContinue
     }
     exit $Code
@@ -211,7 +244,12 @@ function Exit-WithError([int]$Code, [string]$Message) {
 # Dot-sourcing loads the functions only (used by the tests).
 if ($MyInvocation.InvocationName -eq '.') { return }
 
-trap { Exit-WithError 1 $_.Exception.GetBaseException().Message }
+# Name the failing line, so a report from the field points at the bug.
+trap {
+    $e = $_.Exception.GetBaseException()
+    Exit-WithError 1 ($e.Message + [Environment]::NewLine + $_.InvocationInfo.PositionMessage + [Environment]::NewLine +
+        'Details for support: ' + $e.GetType().FullName + [Environment]::NewLine + $e.StackTrace)
+}
 
 $started = Get-Date
 $bitness = if ([Environment]::Is64BitProcess) { '64-bit' } else { '32-bit' }
@@ -272,15 +310,8 @@ if ($candidates.Count -eq 0) { $candidates.Add('Microsoft.ACE.OLEDB.16.0'); $can
 
 $provider = $null
 foreach ($p in $candidates) {
-    # The builder quotes the password, so ; and = in it are safe. Cast every value:
-    # the builder's setters cast to IConvertible and PowerShell can hand them the
-    # PSObject wrapper (Join-Path output), which fails.
-    $csb = New-Object Data.OleDb.OleDbConnectionStringBuilder
-    $csb.Provider = [string]$p
-    $csb.DataSource = [string]$snapshot
-    $csb['Mode'] = 'Read'
-    $csb['Jet OLEDB:Database Password'] = [string]$Password
-    $c = New-Object Data.OleDb.OleDbConnection($csb.ConnectionString)
+    $connectionString = New-AceConnectionString $p $snapshot $Password
+    $c = New-Object Data.OleDb.OleDbConnection($connectionString)
     try {
         $c.Open()
         $script:Conn = $c
@@ -460,8 +491,18 @@ finally {
 }
 
 # --- Prove nothing was written, then the manifest ------------------------------------
+# ACE holds the snapshot's lock file until its COM objects are finalized, which the
+# 32-bit engine does noticeably later than the 64-bit one. The lock file is not part of
+# the export, and a held one breaks hashing and zipping, so wait for it to go.
 $lock = [IO.Path]::ChangeExtension($snapshot, $lockExt)
-if (Test-Path -LiteralPath $lock) { Remove-Item -LiteralPath $lock -ErrorAction SilentlyContinue }
+for ($try = 1; Test-Path -LiteralPath $lock; $try++) {
+    [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+    try { Remove-Item -LiteralPath $lock -Force -ErrorAction Stop }
+    catch {
+        if ($try -ge 40) { Exit-WithError 6 "The Access engine still holds $lock. Close every program that uses Access and run again." }
+        Start-Sleep -Milliseconds 250
+    }
+}
 if ((Get-Sha256 $snapshot) -ne $sourceHash) { $failures.Add('The snapshot changed during the export.') }
 if ((Get-Sha256 $sourceItem.FullName) -ne $sourceHash) {
     $failures.Add('The source database changed during the export; PunchClock was probably used. Re-run with it closed.')
@@ -494,12 +535,13 @@ $manifest = [ordered]@{
         observes_dst = $tz.SupportsDaylightSavingTime
         source = $tzSource
     }
-    tables = @($tableResults)
+    # ToArray, not @(): @() on a List[object] throws "Argument types do not match" (PowerShell bug).
+    tables = $tableResults.ToArray()
     linked_tables = @($linkedTables)
     relationships = @($relations)
     queries = [ordered]@{ file = 'access.queries.csv'; count = $queries.Count }
-    warnings = @($warnings)
-    failures = @($failures)
+    warnings = $warnings.ToArray()
+    failures = $failures.ToArray()
 }
 [IO.File]::WriteAllText((Join-Path $OutDir 'manifest.json'), ($manifest | ConvertTo-Json -Depth 8), $script:Utf8NoBom)
 

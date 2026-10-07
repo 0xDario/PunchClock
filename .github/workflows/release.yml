@@ -14,6 +14,8 @@ on:
       - "src/PunchClock.Import/**"
       - "migration/legacy-export/run-export.cmd"
       - "migration/legacy-export/Export-LegacyData.ps1"
+      - "migration/legacy-export/tests/**"
+      - "PunchClock/PunchClock.accdb"
   workflow_dispatch:
 
 permissions:
@@ -77,6 +79,56 @@ jobs:
           New-Item -ItemType Directory -Force publish/migration/export | Out-Null
           Copy-Item $files publish/migration/export/
 
+      - name: Test the exporter without ACE
+        shell: pwsh
+        run: |
+          # Windows PowerShell 5.1 is what run-export.cmd starts; pwsh 7 is checked too.
+          foreach ($test in 'Test-ConnectionString.ps1', 'Test-SchemaRestrictions.ps1') {
+            powershell -NoProfile -ExecutionPolicy Bypass -File migration/legacy-export/tests/$test
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            pwsh -NoProfile -File migration/legacy-export/tests/$test
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+
+      - name: Install the Access Database Engine
+        shell: pwsh
+        run: |
+          # The exporter only runs where ACE OLEDB is installed, like the legacy app's PC.
+          $exe = Join-Path $env:RUNNER_TEMP 'accessdatabaseengine_X64.exe'
+          Invoke-WebRequest 'https://download.microsoft.com/download/3/5/C/35C84C36-661A-44E6-9324-8786B8DBE231/accessdatabaseengine_X64.exe' -OutFile $exe
+          $sig = Get-AuthenticodeSignature $exe
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            throw "Unexpected signature on the ACE installer: $($sig.Status) $($sig.SignerCertificate.Subject)"
+          }
+          $p = Start-Process $exe -ArgumentList '/quiet' -Wait -PassThru
+          if ($p.ExitCode) { throw "ACE install exited $($p.ExitCode)" }
+
+      - name: Export the legacy database end to end
+        shell: pwsh
+        run: |
+          # Run the bundled exporter the way run-export.cmd does (64-bit Windows PowerShell 5.1),
+          # then check each zip with both consumers. The shipped database is empty; the
+          # 2022-01-03 copy (913a643) still has employees and shifts in the older schema.
+          git fetch --no-tags --depth=1 origin 913a64318c1ae40fac74630a96970a2f34cf64c9
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $withRows = Join-Path $env:RUNNER_TEMP 'PunchClock-2022.accdb'
+          # cmd's redirection keeps the binary file intact; PowerShell's would re-encode it.
+          cmd /c "git show 913a64318c1ae40fac74630a96970a2f34cf64c9:PunchClock/PunchClock.accdb > `"$withRows`""
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $sources = @{ shipped = (Resolve-Path PunchClock/PunchClock.accdb).ProviderPath; 'with-rows' = $withRows }
+          foreach ($name in $sources.Keys) {
+            $out = Join-Path $env:RUNNER_TEMP "legacy-export-$name"
+            Write-Host "::group::Export $name"
+            powershell -NoProfile -ExecutionPolicy Bypass -File publish/migration/export/Export-LegacyData.ps1 `
+              -Source $sources[$name] -OutDir $out -SiteTimeZone 'Eastern Standard Time'
+            if ($LASTEXITCODE) { throw "Export of $name exited $LASTEXITCODE" }
+            python migration/legacy-export/validate_export.py "$out.zip"
+            if ($LASTEXITCODE) { throw "validate_export.py on $name exited $LASTEXITCODE" }
+            & publish\migration\PunchClock.Import.exe check "$out.zip" --report (Join-Path $env:RUNNER_TEMP "import-check-$name")
+            if ($LASTEXITCODE) { throw "PunchClock.Import check on $name exited $LASTEXITCODE" }
+            Write-Host '::endgroup::'
+          }
+
       - name: Install Inno Setup
         shell: pwsh
         run: |
@@ -113,8 +165,46 @@ jobs:
           path: dist
           if-no-files-found: error
 
+  export-32bit:
+    # PCs that only have the 32-bit Access engine (Office or Access Runtime x86) export
+    # through run-export.cmd's retry in 32-bit PowerShell. Run that path for real.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the 32-bit Access Database Engine
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'accessdatabaseengine.exe'
+          Invoke-WebRequest 'https://download.microsoft.com/download/3/5/C/35C84C36-661A-44E6-9324-8786B8DBE231/accessdatabaseengine.exe' -OutFile $exe
+          $sig = Get-AuthenticodeSignature $exe
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            throw "Unexpected signature on the ACE installer: $($sig.Status) $($sig.SignerCertificate.Subject)"
+          }
+          $p = Start-Process $exe -ArgumentList '/quiet' -Wait -PassThru
+          if ($p.ExitCode) { throw "ACE install exited $($p.ExitCode)" }
+
+      - name: Export through run-export.cmd
+        shell: pwsh
+        run: |
+          git fetch --no-tags --depth=1 origin 913a64318c1ae40fac74630a96970a2f34cf64c9
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $db = Join-Path $env:RUNNER_TEMP 'PunchClock-2022.accdb'
+          cmd /c "git show 913a64318c1ae40fac74630a96970a2f34cf64c9:PunchClock/PunchClock.accdb > `"$db`""
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $out = Join-Path $env:RUNNER_TEMP 'legacy-export-32bit'
+          # < NUL answers the final pause. The 64-bit attempt must exit 3 and the retry succeed.
+          $log = cmd /c "migration\legacy-export\run-export.cmd -Source `"$db`" -OutDir `"$out`" -SiteTimeZone `"Eastern Standard Time`" < NUL" 2>&1
+          $rc = $LASTEXITCODE
+          $log | Write-Host
+          if ($rc) { throw "run-export.cmd exited $rc" }
+          if (-not ($log -match 'Retrying with 32-bit PowerShell')) { throw 'Expected the 32-bit retry' }
+          if (-not ($log -match '32-bit Windows PowerShell')) { throw 'Expected the export to run in 32-bit PowerShell' }
+          python migration/legacy-export/validate_export.py "$out.zip"
+          if ($LASTEXITCODE) { throw "validate_export.py exited $LASTEXITCODE" }
+
   release:
-    needs: package
+    needs: [package, export-32bit]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
