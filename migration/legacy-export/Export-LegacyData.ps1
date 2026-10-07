@@ -235,6 +235,7 @@ function Exit-WithError([int]$Code, [string]$Message) {
     if ($script:Conn) { $script:Conn.Dispose(); $script:Conn = $null }
     if ($script:CleanupDir -and (Test-Path -LiteralPath $script:CleanupDir)) {
         [Data.OleDb.OleDbConnection]::ReleaseObjectPool()
+        [GC]::Collect(); [GC]::WaitForPendingFinalizers()  # let ACE drop its lock on the copy
         Remove-Item -LiteralPath $script:CleanupDir -Recurse -Force -ErrorAction SilentlyContinue
     }
     exit $Code
@@ -490,8 +491,18 @@ finally {
 }
 
 # --- Prove nothing was written, then the manifest ------------------------------------
+# ACE holds the snapshot's lock file until its COM objects are finalized, which the
+# 32-bit engine does noticeably later than the 64-bit one. The lock file is not part of
+# the export, and a held one breaks hashing and zipping, so wait for it to go.
 $lock = [IO.Path]::ChangeExtension($snapshot, $lockExt)
-if (Test-Path -LiteralPath $lock) { Remove-Item -LiteralPath $lock -ErrorAction SilentlyContinue }
+for ($try = 1; Test-Path -LiteralPath $lock; $try++) {
+    [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+    try { Remove-Item -LiteralPath $lock -Force -ErrorAction Stop }
+    catch {
+        if ($try -ge 40) { Exit-WithError 6 "The Access engine still holds $lock. Close every program that uses Access and run again." }
+        Start-Sleep -Milliseconds 250
+    }
+}
 if ((Get-Sha256 $snapshot) -ne $sourceHash) { $failures.Add('The snapshot changed during the export.') }
 if ((Get-Sha256 $sourceItem.FullName) -ne $sourceHash) {
     $failures.Add('The source database changed during the export; PunchClock was probably used. Re-run with it closed.')
