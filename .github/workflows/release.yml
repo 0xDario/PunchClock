@@ -14,6 +14,8 @@ on:
       - "src/PunchClock.Import/**"
       - "migration/legacy-export/run-export.cmd"
       - "migration/legacy-export/Export-LegacyData.ps1"
+      - "migration/legacy-export/tests/**"
+      - "PunchClock/PunchClock.accdb"
   workflow_dispatch:
 
 permissions:
@@ -76,6 +78,42 @@ jobs:
           }
           New-Item -ItemType Directory -Force publish/migration/export | Out-Null
           Copy-Item $files publish/migration/export/
+
+      - name: Test the exporter's connection string
+        shell: pwsh
+        run: |
+          # Windows PowerShell 5.1 is what run-export.cmd starts; pwsh 7 is checked too.
+          powershell -NoProfile -ExecutionPolicy Bypass -File migration/legacy-export/tests/Test-ConnectionString.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File migration/legacy-export/tests/Test-ConnectionString.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Install the Access Database Engine
+        shell: pwsh
+        run: |
+          # The exporter only runs where ACE OLEDB is installed, like the legacy app's PC.
+          $exe = Join-Path $env:RUNNER_TEMP 'accessdatabaseengine_X64.exe'
+          Invoke-WebRequest 'https://download.microsoft.com/download/3/5/C/35C84C36-661A-44E6-9324-8786B8DBE231/accessdatabaseengine_X64.exe' -OutFile $exe
+          $sig = Get-AuthenticodeSignature $exe
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            throw "Unexpected signature on the ACE installer: $($sig.Status) $($sig.SignerCertificate.Subject)"
+          }
+          $p = Start-Process $exe -ArgumentList '/quiet' -Wait -PassThru
+          if ($p.ExitCode) { throw "ACE install exited $($p.ExitCode)" }
+
+      - name: Export the legacy database end to end
+        shell: pwsh
+        run: |
+          # Run the bundled exporter the way run-export.cmd does (64-bit Windows PowerShell 5.1)
+          # on the legacy app's own database, then check the zip with both consumers.
+          $out = Join-Path $env:RUNNER_TEMP 'legacy-export'
+          powershell -NoProfile -ExecutionPolicy Bypass -File publish/migration/export/Export-LegacyData.ps1 `
+            -Source PunchClock/PunchClock.accdb -OutDir $out -SiteTimeZone 'Eastern Standard Time'
+          if ($LASTEXITCODE) { throw "Export exited $LASTEXITCODE" }
+          python migration/legacy-export/validate_export.py "$out.zip"
+          if ($LASTEXITCODE) { throw "validate_export.py exited $LASTEXITCODE" }
+          & publish\migration\PunchClock.Import.exe check "$out.zip" --report (Join-Path $env:RUNNER_TEMP 'import-check')
+          if ($LASTEXITCODE) { throw "PunchClock.Import check exited $LASTEXITCODE" }
 
       - name: Install Inno Setup
         shell: pwsh
