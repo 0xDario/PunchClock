@@ -101,6 +101,10 @@ jobs:
           $p = Start-Process $exe -ArgumentList '/quiet' -Wait -PassThru
           if ($p.ExitCode) { throw "ACE install exited $($p.ExitCode)" }
 
+      - name: ACE probe (temporary)
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ace-probe.ps1
+
       - name: Export the legacy database end to end
         shell: pwsh
         run: |
