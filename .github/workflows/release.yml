@@ -165,8 +165,46 @@ jobs:
           path: dist
           if-no-files-found: error
 
+  export-32bit:
+    # PCs that only have the 32-bit Access engine (Office or Access Runtime x86) export
+    # through run-export.cmd's retry in 32-bit PowerShell. Run that path for real.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the 32-bit Access Database Engine
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'accessdatabaseengine.exe'
+          Invoke-WebRequest 'https://download.microsoft.com/download/3/5/C/35C84C36-661A-44E6-9324-8786B8DBE231/accessdatabaseengine.exe' -OutFile $exe
+          $sig = Get-AuthenticodeSignature $exe
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            throw "Unexpected signature on the ACE installer: $($sig.Status) $($sig.SignerCertificate.Subject)"
+          }
+          $p = Start-Process $exe -ArgumentList '/quiet' -Wait -PassThru
+          if ($p.ExitCode) { throw "ACE install exited $($p.ExitCode)" }
+
+      - name: Export through run-export.cmd
+        shell: pwsh
+        run: |
+          git fetch --no-tags --depth=1 origin 913a64318c1ae40fac74630a96970a2f34cf64c9
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $db = Join-Path $env:RUNNER_TEMP 'PunchClock-2022.accdb'
+          cmd /c "git show 913a64318c1ae40fac74630a96970a2f34cf64c9:PunchClock/PunchClock.accdb > `"$db`""
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $out = Join-Path $env:RUNNER_TEMP 'legacy-export-32bit'
+          # < NUL answers the final pause. The 64-bit attempt must exit 3 and the retry succeed.
+          $log = cmd /c "migration\legacy-export\run-export.cmd -Source `"$db`" -OutDir `"$out`" -SiteTimeZone `"Eastern Standard Time`" < NUL" 2>&1
+          $rc = $LASTEXITCODE
+          $log | Write-Host
+          if ($rc) { throw "run-export.cmd exited $rc" }
+          if (-not ($log -match 'Retrying with 32-bit PowerShell')) { throw 'Expected the 32-bit retry' }
+          if (-not ($log -match '32-bit Windows PowerShell')) { throw 'Expected the export to run in 32-bit PowerShell' }
+          python migration/legacy-export/validate_export.py "$out.zip"
+          if ($LASTEXITCODE) { throw "validate_export.py exited $LASTEXITCODE" }
+
   release:
-    needs: package
+    needs: [package, export-32bit]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
