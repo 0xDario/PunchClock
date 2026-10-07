@@ -184,8 +184,21 @@ function Read-ControlTotals([Data.IDataReader]$Reader, [object[]]$Columns) {
     @{ Rows = [long]$Reader['rows_']; Columns = $totals }
 }
 
+function ConvertTo-SchemaRestrictions([object[]]$Restrictions) {
+    # Values that came through a pipeline (table names from the Tables rowset) arrive as
+    # PSObject wrappers, and PowerShell does not unwrap elements of an array passed to a
+    # .NET method. OLE DB cannot marshal a PSObject and fails with "The parameter is
+    # incorrect", so pass plain strings. Restrictions are always strings or null.
+    if ($null -eq $Restrictions) { return ,$null }
+    $plain = New-Object object[] $Restrictions.Length
+    for ($i = 0; $i -lt $Restrictions.Length; $i++) {
+        if ($null -ne $Restrictions[$i]) { $plain[$i] = [string]$Restrictions[$i] }
+    }
+    ,$plain
+}
+
 function Get-SchemaRows($Connection, [guid]$Schema, [object[]]$Restrictions) {
-    try { @($Connection.GetOleDbSchemaTable($Schema, $Restrictions).Rows) }
+    try { @($Connection.GetOleDbSchemaTable($Schema, (ConvertTo-SchemaRestrictions $Restrictions)).Rows) }
     catch {
         $name = @([Data.OleDb.OleDbSchemaGuid].GetFields() | Where-Object { $_.GetValue($null) -eq $Schema } | ForEach-Object { $_.Name }) -join '/'
         $what = if ($null -eq $Restrictions) { 'none' } else { (@($Restrictions | ForEach-Object { if ($null -eq $_) { '*' } else { "'$_'" } }) -join ', ') }

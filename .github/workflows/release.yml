@@ -79,14 +79,16 @@ jobs:
           New-Item -ItemType Directory -Force publish/migration/export | Out-Null
           Copy-Item $files publish/migration/export/
 
-      - name: Test the exporter's connection string
+      - name: Test the exporter without ACE
         shell: pwsh
         run: |
           # Windows PowerShell 5.1 is what run-export.cmd starts; pwsh 7 is checked too.
-          powershell -NoProfile -ExecutionPolicy Bypass -File migration/legacy-export/tests/Test-ConnectionString.ps1
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          pwsh -NoProfile -File migration/legacy-export/tests/Test-ConnectionString.ps1
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          foreach ($test in 'Test-ConnectionString.ps1', 'Test-SchemaRestrictions.ps1') {
+            powershell -NoProfile -ExecutionPolicy Bypass -File migration/legacy-export/tests/$test
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            pwsh -NoProfile -File migration/legacy-export/tests/$test
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
 
       - name: Install the Access Database Engine
         shell: pwsh
@@ -101,23 +103,31 @@ jobs:
           $p = Start-Process $exe -ArgumentList '/quiet' -Wait -PassThru
           if ($p.ExitCode) { throw "ACE install exited $($p.ExitCode)" }
 
-      - name: ACE probe (temporary)
-        shell: pwsh
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File ace-probe.ps1
-
       - name: Export the legacy database end to end
         shell: pwsh
         run: |
-          # Run the bundled exporter the way run-export.cmd does (64-bit Windows PowerShell 5.1)
-          # on the legacy app's own database, then check the zip with both consumers.
-          $out = Join-Path $env:RUNNER_TEMP 'legacy-export'
-          powershell -NoProfile -ExecutionPolicy Bypass -File publish/migration/export/Export-LegacyData.ps1 `
-            -Source PunchClock/PunchClock.accdb -OutDir $out -SiteTimeZone 'Eastern Standard Time'
-          if ($LASTEXITCODE) { throw "Export exited $LASTEXITCODE" }
-          python migration/legacy-export/validate_export.py "$out.zip"
-          if ($LASTEXITCODE) { throw "validate_export.py exited $LASTEXITCODE" }
-          & publish\migration\PunchClock.Import.exe check "$out.zip" --report (Join-Path $env:RUNNER_TEMP 'import-check')
-          if ($LASTEXITCODE) { throw "PunchClock.Import check exited $LASTEXITCODE" }
+          # Run the bundled exporter the way run-export.cmd does (64-bit Windows PowerShell 5.1),
+          # then check each zip with both consumers. The shipped database is empty; the
+          # 2022-01-03 copy (913a643) still has employees and shifts in the older schema.
+          git fetch --no-tags --depth=1 origin 913a64318c1ae40fac74630a96970a2f34cf64c9
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $withRows = Join-Path $env:RUNNER_TEMP 'PunchClock-2022.accdb'
+          # cmd's redirection keeps the binary file intact; PowerShell's would re-encode it.
+          cmd /c "git show 913a64318c1ae40fac74630a96970a2f34cf64c9:PunchClock/PunchClock.accdb > `"$withRows`""
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $sources = @{ shipped = (Resolve-Path PunchClock/PunchClock.accdb).ProviderPath; 'with-rows' = $withRows }
+          foreach ($name in $sources.Keys) {
+            $out = Join-Path $env:RUNNER_TEMP "legacy-export-$name"
+            Write-Host "::group::Export $name"
+            powershell -NoProfile -ExecutionPolicy Bypass -File publish/migration/export/Export-LegacyData.ps1 `
+              -Source $sources[$name] -OutDir $out -SiteTimeZone 'Eastern Standard Time'
+            if ($LASTEXITCODE) { throw "Export of $name exited $LASTEXITCODE" }
+            python migration/legacy-export/validate_export.py "$out.zip"
+            if ($LASTEXITCODE) { throw "validate_export.py on $name exited $LASTEXITCODE" }
+            & publish\migration\PunchClock.Import.exe check "$out.zip" --report (Join-Path $env:RUNNER_TEMP "import-check-$name")
+            if ($LASTEXITCODE) { throw "PunchClock.Import check on $name exited $LASTEXITCODE" }
+            Write-Host '::endgroup::'
+          }
 
       - name: Install Inno Setup
         shell: pwsh
