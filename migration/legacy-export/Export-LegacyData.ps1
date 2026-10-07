@@ -185,7 +185,12 @@ function Read-ControlTotals([Data.IDataReader]$Reader, [object[]]$Columns) {
 }
 
 function Get-SchemaRows($Connection, [guid]$Schema, [object[]]$Restrictions) {
-    @($Connection.GetOleDbSchemaTable($Schema, $Restrictions).Rows)
+    try { @($Connection.GetOleDbSchemaTable($Schema, $Restrictions).Rows) }
+    catch {
+        $name = @([Data.OleDb.OleDbSchemaGuid].GetFields() | Where-Object { $_.GetValue($null) -eq $Schema } | ForEach-Object { $_.Name }) -join '/'
+        $what = if ($null -eq $Restrictions) { 'none' } else { (@($Restrictions | ForEach-Object { if ($null -eq $_) { '*' } else { "'$_'" } }) -join ', ') }
+        throw "Reading the $name schema (restrictions: $what) failed: $($_.Exception.GetBaseException().Message)"
+    }
 }
 
 function Get-RowValue($Row, [string]$Name) {
