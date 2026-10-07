@@ -225,7 +225,8 @@ function Exit-WithError([int]$Code, [string]$Message) {
 # Dot-sourcing loads the functions only (used by the tests).
 if ($MyInvocation.InvocationName -eq '.') { return }
 
-trap { Exit-WithError 1 $_.Exception.GetBaseException().Message }
+# Name the failing line, so a report from the field points at the bug.
+trap { Exit-WithError 1 ($_.Exception.GetBaseException().Message + [Environment]::NewLine + $_.InvocationInfo.PositionMessage) }
 
 $started = Get-Date
 $bitness = if ([Environment]::Is64BitProcess) { '64-bit' } else { '32-bit' }
