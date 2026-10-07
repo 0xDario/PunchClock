@@ -244,7 +244,11 @@ function Exit-WithError([int]$Code, [string]$Message) {
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 # Name the failing line, so a report from the field points at the bug.
-trap { Exit-WithError 1 ($_.Exception.GetBaseException().Message + [Environment]::NewLine + $_.InvocationInfo.PositionMessage) }
+trap {
+    $e = $_.Exception.GetBaseException()
+    Exit-WithError 1 ($e.Message + [Environment]::NewLine + $_.InvocationInfo.PositionMessage + [Environment]::NewLine +
+        'Details for support: ' + $e.GetType().FullName + [Environment]::NewLine + $e.StackTrace)
+}
 
 $started = Get-Date
 $bitness = if ([Environment]::Is64BitProcess) { '64-bit' } else { '32-bit' }
