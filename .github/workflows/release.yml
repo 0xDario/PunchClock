@@ -2,14 +2,19 @@ name: Release
 
 # Pushing a v2+ tag (git tag v2.0.0 && git push origin v2.0.0) builds the Windows
 # installer and attaches it to a DRAFT GitHub release; publish the draft by hand
-# after checking it. Pull requests that touch packaging build the installer as a
-# workflow artifact only, so a broken installer is caught before a tag exists.
+# after checking it. The release notes are the tag's section of CHANGELOG.md
+# (.github/scripts/release-notes.sh). Pull requests that touch packaging build
+# the installer as a workflow artifact only, so a broken installer is caught
+# before a tag exists.
 on:
   push:
     tags: ["v[2-9].*", "v[1-9][0-9]*.*"]
   pull_request:
     paths:
       - ".github/workflows/release.yml"
+      - ".github/scripts/release-notes.sh"
+      - "CHANGELOG.md"
+      - "src/Directory.Build.props"
       - "installer/**"
       - "src/PunchClock.Import/**"
       - "migration/legacy-export/run-export.cmd"
@@ -52,6 +57,12 @@ jobs:
           }
           "version=$version" >> $env:GITHUB_OUTPUT
           Write-Host "Packaging PunchClock $version"
+
+      - name: Check the release notes
+        # The release's notes come from its CHANGELOG.md section; fail before the
+        # long build rather than at the end.
+        shell: bash
+        run: .github/scripts/release-notes.sh "v${{ steps.version.outputs.version }}"
 
       - name: Test
         run: dotnet test --solution PunchClock.Modern.sln --configuration Release
@@ -211,6 +222,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history and tags, for the Full Changelog link to the previous tag.
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
@@ -223,16 +237,5 @@ jobs:
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.package.outputs.version }}
         run: |
-          cat > notes.md <<EOF
-          PunchClock $VERSION for Windows 10/11 (64-bit).
-
-          **Moving from the old PunchClock app (v1.x)?** Follow [the switchover steps in the README](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/README.md#moving-from-the-old-punchclock-app) before anyone punches in the new app.
-
-          | File | Use |
-          |---|---|
-          | \`PunchClock-Setup-$VERSION.exe\` | Installer. Includes the export and import tools for the switchover. |
-          | \`SHA256SUMS.txt\` | Checksum of the installer. |
-
-          The installer is not code-signed yet, so Windows SmartScreen asks for confirmation: click **More info**, then **Run anyway**.
-          EOF
+          .github/scripts/release-notes.sh "$TAG" > notes.md
           gh release create "$TAG" dist/* --draft --verify-tag --title "PunchClock $VERSION" --notes-file notes.md

@@ -65,6 +65,9 @@
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
 
+# Shell scripts run under bash on the Windows runners too
+*.sh text eol=lf
+
 # Batch files need CRLF for labels and goto to work reliably
 *.cmd text eol=crlf
 *.bat text eol=crlf

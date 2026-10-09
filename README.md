@@ -91,8 +91,8 @@ From a command prompt, the same importer runs unattended:
 
 ## Releasing
 
-1. Set `<Version>` in `src/Directory.Build.props` and merge to `master`.
-2. Tag it: `git tag v2.0.0 && git push origin v2.0.0`. v1.x tags are the legacy app.
-3. `.github/workflows/release.yml` runs the tests, publishes the app and the importer self-contained for `win-x64`, bundles the exporter, builds `PunchClock-Setup-<version>.exe` (Inno Setup, `installer/PunchClock.iss`) and `SHA256SUMS.txt`, and attaches them to a **draft** release. Check the draft, then publish it.
+1. Set `<Version>` in `src/Directory.Build.props`, add a `## v<version> - <date>` section to [CHANGELOG.md](CHANGELOG.md) with what is new and what was fixed (Features Added, Bugs Fixed), and merge to `master`. The build fails if the version has no section.
+2. Tag it: `git fetch origin && git tag v<version> origin/master && git push origin v<version>`. v1.x tags are the legacy app.
+3. `.github/workflows/release.yml` runs the tests, publishes the app and the importer self-contained for `win-x64`, bundles the exporter, builds `PunchClock-Setup-<version>.exe` (Inno Setup, `installer/PunchClock.iss`) and `SHA256SUMS.txt`, and attaches them to a **draft** release whose notes are the CHANGELOG section, a Full Changelog link to the previous tag, and the download table (`.github/scripts/release-notes.sh v<version>` prints them locally). Check the draft, then publish it.
 
 Pull requests that touch packaging build the same installer as a workflow artifact, without a release.
