@@ -8,6 +8,9 @@
     <AssemblyName>PunchClock</AssemblyName>
     <!-- Lets the solution build (not run) on Linux/macOS dev boxes and CI agents. -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Exe, taskbar and every window's title bar; WPF windows without an Icon use this one.
+         Rebuild it from the SVGs with Assets/Icon/build_icon.py. -->
+    <ApplicationIcon>Assets\PunchClock.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
