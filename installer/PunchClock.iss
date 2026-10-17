@@ -36,6 +36,7 @@ OutputBaseFilename=PunchClock-Setup-{#AppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\src\PunchClock.App\Assets\PunchClock.ico
 UninstallDisplayIcon={app}\PunchClock.exe
 ; The legacy v1 app was a copied folder, not an installer, so nothing here touches it.
 
