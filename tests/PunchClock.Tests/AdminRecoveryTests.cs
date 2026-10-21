@@ -145,8 +145,10 @@ public sealed class AdminRecoveryTests : DatabaseTest
     [Fact]
     public void Shipped_owner_keys_are_valid()
     {
+        // The kiosk would refuse to start with a malformed key, and with none it could not recover an admin.
         var recovery = new AdminRecoveryService(Db.Store, TestDatabase.FastHasher, OwnerKeys.Trusted);
-        Assert.Equal(OwnerKeys.Trusted.Count > 0, recovery.IsAvailable);
+        Assert.True(recovery.IsAvailable);
+        Assert.Contains("a69cf00996d01267", OwnerKeys.Trusted.Select(OwnerKeySignature.Fingerprint));
     }
 
     [Fact]
