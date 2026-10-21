@@ -5,6 +5,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>PunchClock.Import</RootNamespace>
     <AssemblyName>PunchClock.Import</AssemblyName>
+    <!-- Same icon as the app, for the "Import into PunchClock" Start menu shortcut. -->
+    <ApplicationIcon>..\PunchClock.App\Assets\PunchClock.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
