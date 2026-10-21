@@ -2,6 +2,13 @@
 
 Each GitHub release takes its notes from its section below. Before tagging a release, add a `## vX.Y.Z - YYYY-MM-DD` section for it, using the same headings (Features Added, Bugs Fixed). The release build stops if the section is missing. v1.x is the legacy WinForms app; its notes are on the [Releases](https://github.com/0xDario/PunchClock/releases) page.
 
+## v2.0.3 - 2026-10-21
+
+A new app icon. The app, its data and the switchover tools are otherwise the same as in 2.0.2, so 2.0.3 installs over 2.0.2 and is equally safe for the switchover.
+
+Features Added:
+- New PunchClock icon: a clock with a time card, so the app is easy to spot. It appears on the desktop and Start menu shortcuts, the taskbar, every window's title bar, the import tool and the setup program
+
 ## v2.0.2 - 2026-10-07
 
 The first v2 release ready for the switchover from the old app. Use it instead of 2.0.0 and 2.0.1, whose export tool cannot read the old database. The app itself is the same as in 2.0.0.
