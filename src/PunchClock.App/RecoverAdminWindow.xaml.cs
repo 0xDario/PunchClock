@@ -12,12 +12,16 @@ public partial class RecoverAdminWindow : Window
 {
     private readonly AdminRecoveryService _recovery;
     private RecoveryChallenge? _challenge;
+    private bool _recovering;
 
     public RecoverAdminWindow(AdminRecoveryService recovery)
     {
         InitializeComponent();
         _recovery = recovery;
         Loaded += async (_, _) => await LoadAdminsAsync();
+
+        // A recovery in flight still commits if the window closes, and its result would be lost.
+        Closing += (_, e) => e.Cancel = _recovering;
     }
 
     public string? RecoveredUsername { get; private set; }
@@ -119,7 +123,17 @@ public partial class RecoverAdminWindow : Window
         try
         {
             // Password hashing is deliberately slow; keep it off the UI thread.
-            var result = await Task.Run(() => _recovery.RecoverAsync(challenge, response, password, reason));
+            _recovering = true;
+            RecoveryResult result;
+            try
+            {
+                result = await Task.Run(() => _recovery.RecoverAsync(challenge, response, password, reason));
+            }
+            finally
+            {
+                _recovering = false;
+            }
+
             if (result == RecoveryResult.Recovered)
             {
                 RecoveredUsername = choice.User.Username;
