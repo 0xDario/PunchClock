@@ -16,6 +16,7 @@ on:
       - "CHANGELOG.md"
       - "src/Directory.Build.props"
       - "installer/**"
+      - "src/PunchClock.App/Assets/**"
       - "src/PunchClock.Import/**"
       - "migration/legacy-export/run-export.cmd"
       - "migration/legacy-export/Export-LegacyData.ps1"
