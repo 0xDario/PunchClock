@@ -1,23 +1,22 @@
 using System.Windows;
+using System.Windows.Controls;
 using PunchClock.Core.Accounts;
 
 namespace PunchClock.App;
 
 /// <summary>
-/// Sets a temporary password on an admin account when no admin can sign in. Only opened when a
-/// Windows administrator runs PunchClock elevated; the change is audited under their Windows name.
+/// Recovers an admin account with a response signed by the owner key. The challenge lives only in
+/// this window: closing it, or choosing another account, discards it and its response.
 /// </summary>
 public partial class RecoverAdminWindow : Window
 {
-    private readonly AccountService _accounts;
-    private readonly string _windowsUser;
+    private readonly AdminRecoveryService _recovery;
+    private RecoveryChallenge? _challenge;
 
-    public RecoverAdminWindow(AccountService accounts, string windowsUser)
+    public RecoverAdminWindow(AdminRecoveryService recovery)
     {
         InitializeComponent();
-        _accounts = accounts;
-        _windowsUser = windowsUser;
-        Intro.Text = $"Choose the admin account that cannot sign in and give it a temporary password. Its owner must choose a new password at their next sign-in. The audit log records that {windowsUser} did this, and why.";
+        _recovery = recovery;
         Loaded += async (_, _) => await LoadAdminsAsync();
     }
 
@@ -32,14 +31,16 @@ public partial class RecoverAdminWindow : Window
     {
         try
         {
-            var admins = (await Task.Run(() => _accounts.ListAsync()))
-                .Where(u => u is { Role: UserRole.Admin, IsActive: true })
+            var admins = (await Task.Run(() => _recovery.ListRecoverableAsync()))
                 .Select(u => new AdminChoice(u))
                 .ToList();
             Account.ItemsSource = admins;
-            Account.SelectedIndex = admins.Count == 1 ? 0 : -1;
-            RecoverButton.IsEnabled = admins.Count > 0;
             Account.Focus();
+            if (admins.Count == 1)
+            {
+                // Raises SelectionChanged, which issues the challenge.
+                Account.SelectedIndex = 0;
+            }
         }
         catch (Exception ex)
         {
@@ -47,9 +48,61 @@ public partial class RecoverAdminWindow : Window
         }
     }
 
+    private async void Account_SelectionChanged(object sender, SelectionChangedEventArgs e) => await IssueChallengeAsync();
+
+    /// <summary>Replaces any challenge with a new one for the selected account.</summary>
+    private async Task IssueChallengeAsync()
+    {
+        _challenge = null;
+        Challenge.Text = "";
+        Response.Clear();
+        CopyButton.IsEnabled = RecoverButton.IsEnabled = false;
+        if (Account.SelectedItem is not AdminChoice choice)
+        {
+            return;
+        }
+
+        try
+        {
+            var challenge = await Task.Run(() => _recovery.IssueChallengeAsync(choice.User.Id));
+            if (!ReferenceEquals(Account.SelectedItem, choice))
+            {
+                return;
+            }
+
+            if (challenge is null)
+            {
+                Error.Text = "That account is no longer an active admin account.";
+                return;
+            }
+
+            _challenge = challenge;
+            Challenge.Text = challenge.Code;
+            ChallengeNote.Text = $"For account id {challenge.UserId}. It works for {AdminRecoveryService.ChallengeLifetime.TotalMinutes:0} minutes and only while this window stays open.";
+            Error.Text = "";
+            CopyButton.IsEnabled = RecoverButton.IsEnabled = true;
+        }
+        catch (Exception ex)
+        {
+            Error.Text = $"A challenge could not be issued: {ex.Message}";
+        }
+    }
+
+    private void Copy_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Clipboard.SetText(Challenge.Text);
+        }
+        catch (Exception ex)
+        {
+            Error.Text = $"Could not copy: {ex.Message}";
+        }
+    }
+
     private async void Recover_Click(object sender, RoutedEventArgs e)
     {
-        if (Account.SelectedItem is not AdminChoice choice)
+        if (_challenge is not { } challenge || Account.SelectedItem is not AdminChoice choice)
         {
             Error.Text = "Choose the admin account to recover.";
             return;
@@ -61,23 +114,31 @@ public partial class RecoverAdminWindow : Window
             return;
         }
 
-        var (userId, password, reason) = (choice.User.Id, Password.Password, Reason.Text);
+        var (response, password, reason) = (Response.Text, Password.Password, Reason.Text);
         RecoverButton.IsEnabled = false;
         try
         {
             // Password hashing is deliberately slow; keep it off the UI thread.
-            var result = await Task.Run(() => _accounts.RecoverAdminAsync(userId, password, reason, _windowsUser));
-            if (result == AccountChangeResult.Changed)
+            var result = await Task.Run(() => _recovery.RecoverAsync(challenge, response, password, reason));
+            if (result == RecoveryResult.Recovered)
             {
                 RecoveredUsername = choice.User.Username;
                 DialogResult = true;
                 return;
             }
 
+            if (result is RecoveryResult.Expired or RecoveryResult.AlreadyUsed)
+            {
+                await IssueChallengeAsync();
+                Error.Text = "That challenge can no longer be used. A new one is shown above: send it to the owner for a new response.";
+                return;
+            }
+
             Error.Text = result switch
             {
-                AccountChangeResult.ReasonRequired => "Enter a reason for the recovery.",
-                AccountChangeResult.PasswordRejected => $"The temporary password must be at least {AccountService.MinPasswordLength} characters.",
+                RecoveryResult.ReasonRequired => "Enter a reason for the recovery.",
+                RecoveryResult.PasswordRejected => $"The temporary password must be at least {AccountService.MinPasswordLength} characters.",
+                RecoveryResult.InvalidResponse => "That response is not the owner's signature of this challenge. Check it was typed exactly, and that the owner signed the challenge shown above.",
                 _ => "That account is no longer an active admin account.",
             };
         }
@@ -89,7 +150,7 @@ public partial class RecoverAdminWindow : Window
         {
             Password.Clear();
             RepeatPassword.Clear();
-            RecoverButton.IsEnabled = true;
+            RecoverButton.IsEnabled = _challenge is { IsUsed: false };
         }
     }
 }

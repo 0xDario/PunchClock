@@ -7,8 +7,10 @@ Each GitHub release takes its notes from its section below. Before tagging a rel
 Adds a way back into PunchClock when the only admin forgets their password. The database and the switchover tools are the same as in 2.0.2, so 2.0.4 installs over 2.0.2 or 2.0.3 and keeps all data.
 
 Features Added:
-- Forgot password on the Admin sign-in window. Another admin can still reset a forgotten password from Accounts; when no admin can sign in, a Windows administrator running PunchClock with Run as administrator can set a temporary password on an admin account. Its owner must choose a new password at their next sign-in, and the account's sign-in lockout is cleared
-- Every recovery is kept in the audit log: which account, when, on which PC, the Windows account that did it and the reason they gave
+- Forgot password on the Admin sign-in window. Another admin can still reset a forgotten password from Accounts; when no admin can sign in, PunchClock shows a recovery challenge, the site owner signs it with their owner key on their own computer, and the response lets the kiosk set a temporary password once. The account's owner must choose a new password at their next sign-in, and its sign-in lockout is cleared
+- Being at the kiosk PC is not enough to recover an account: the owner key never leaves the owner's computer, and each challenge works once, for 60 minutes
+- Every recovery is kept in the audit log: which account, when, on which PC, the challenge, the owner key's fingerprint and the reason given
+- PunchClock.OwnerKey, the owner's tool that makes the key and signs challenges (not part of the installer)
 
 ## v2.0.2 - 2026-10-07
 

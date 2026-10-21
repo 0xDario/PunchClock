@@ -60,7 +60,7 @@ public partial class MainWindow : Window
             {
                 // Whoever creates the first admin owns the site, so a kiosk user cannot do it:
                 // it takes a Windows administrator running PunchClock elevated.
-                if (!WindowsAdmin.IsElevated())
+                if (!IsElevatedWindowsAdmin())
                 {
                     MessageBox.Show(this,
                         "No PunchClock admin account exists yet. A Windows administrator must create it: right-click PunchClock, choose \"Run as administrator\", then click Admin.",
@@ -73,7 +73,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                var signIn = new SignInWindow(_services.Accounts) { Owner = this };
+                var signIn = new SignInWindow(_services.Accounts, _services.Recovery) { Owner = this };
                 admin = signIn.ShowDialog() == true ? signIn.User : null;
             }
 
@@ -108,6 +108,14 @@ public partial class MainWindow : Window
         {
             _viewModel.Show($"Admin action failed: {ex.Message}", isError: true);
         }
+    }
+
+    private static bool IsElevatedWindowsAdmin()
+    {
+        // Under UAC this is true only for an elevated process, not for an admin's filtered token.
+        using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+        return new System.Security.Principal.WindowsPrincipal(identity)
+            .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
     }
 
     private void PinBox_PreviewTextInput(object sender, TextCompositionEventArgs e) => DigitInput.Filter(e);

@@ -6,11 +6,13 @@ namespace PunchClock.App;
 public partial class SignInWindow : Window
 {
     private readonly AccountService _accounts;
+    private readonly AdminRecoveryService _recovery;
 
-    public SignInWindow(AccountService accounts)
+    public SignInWindow(AccountService accounts, AdminRecoveryService recovery)
     {
         InitializeComponent();
         _accounts = accounts;
+        _recovery = recovery;
         Loaded += (_, _) => Username.Focus();
     }
 
@@ -46,18 +48,16 @@ public partial class SignInWindow : Window
 
     private void ForgotPassword_Click(object sender, RoutedEventArgs e)
     {
-        // Recovery sets a password without anyone signing in, so it takes the same Windows
-        // administrator who could create the first admin; a kiosk user cannot take an account over.
-        if (!WindowsAdmin.IsElevated())
+        if (!_recovery.IsAvailable)
         {
             MessageBox.Show(this,
                 "Ask another PunchClock admin to reset your password from Admin, Accounts.\n\n" +
-                "If no admin can sign in, a Windows administrator must close PunchClock, right-click it, choose \"Run as administrator\", click Admin, then Forgot password.",
+                "This copy of PunchClock has no owner key, so it cannot recover an admin account when no admin can sign in.",
                 "Forgot password", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var recover = new RecoverAdminWindow(_accounts, WindowsAdmin.CurrentUserName()) { Owner = this };
+        var recover = new RecoverAdminWindow(_recovery) { Owner = this };
         if (recover.ShowDialog() == true && recover.RecoveredUsername is { } username)
         {
             Username.Text = username;
