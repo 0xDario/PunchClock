@@ -2,6 +2,14 @@
 
 Each GitHub release takes its notes from its section below. Before tagging a release, add a `## vX.Y.Z - YYYY-MM-DD` section for it, using the same headings (Features Added, Bugs Fixed). The release build stops if the section is missing. v1.x is the legacy WinForms app; its notes are on the [Releases](https://github.com/0xDario/PunchClock/releases) page.
 
+## v2.0.4 - 2026-10-21
+
+Adds a way back into PunchClock when the only admin forgets their password. The database and the switchover tools are the same as in 2.0.2, so 2.0.4 installs over 2.0.2 or 2.0.3 and keeps all data.
+
+Features Added:
+- Forgot password on the Admin sign-in window. Another admin can still reset a forgotten password from Accounts; when no admin can sign in, a Windows administrator running PunchClock with Run as administrator can set a temporary password on an admin account. Its owner must choose a new password at their next sign-in, and the account's sign-in lockout is cleared
+- Every recovery is kept in the audit log: which account, when, on which PC, the Windows account that did it and the reason they gave
+
 ## v2.0.2 - 2026-10-07
 
 The first v2 release ready for the switchover from the old app. Use it instead of 2.0.0 and 2.0.1, whose export tool cannot read the old database. The app itself is the same as in 2.0.0.

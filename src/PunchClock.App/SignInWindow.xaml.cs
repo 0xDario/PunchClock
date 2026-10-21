@@ -43,4 +43,29 @@ public partial class SignInWindow : Window
             SignInButton.IsEnabled = true;
         }
     }
+
+    private void ForgotPassword_Click(object sender, RoutedEventArgs e)
+    {
+        // Recovery sets a password without anyone signing in, so it takes the same Windows
+        // administrator who could create the first admin; a kiosk user cannot take an account over.
+        if (!WindowsAdmin.IsElevated())
+        {
+            MessageBox.Show(this,
+                "Ask another PunchClock admin to reset your password from Admin, Accounts.\n\n" +
+                "If no admin can sign in, a Windows administrator must close PunchClock, right-click it, choose \"Run as administrator\", click Admin, then Forgot password.",
+                "Forgot password", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var recover = new RecoverAdminWindow(_accounts, WindowsAdmin.CurrentUserName()) { Owner = this };
+        if (recover.ShowDialog() == true && recover.RecoveredUsername is { } username)
+        {
+            Username.Text = username;
+            Password.Clear();
+            Error.Text = "";
+            Notice.Text = "Sign in with the temporary password. You will then choose a new one.";
+            Notice.Visibility = Visibility.Visible;
+            Password.Focus();
+        }
+    }
 }
