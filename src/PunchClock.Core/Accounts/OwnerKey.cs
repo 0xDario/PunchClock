@@ -12,7 +12,11 @@ namespace PunchClock.Core.Accounts;
 public static class OwnerKeys
 {
     /// <summary>Base64 SubjectPublicKeyInfo of each trusted ECDSA P-256 key.</summary>
-    public static IReadOnlyList<string> Trusted { get; } = [];
+    public static IReadOnlyList<string> Trusted { get; } =
+    [
+        // Dario Turchi, site owner; fingerprint a69cf00996d01267. Added 2026-10-21.
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEBzO1Ltj5YsuRhhU0CGFAVga5TnL3b5Z9/fwvVJiH0pKyLCGljVkxl7EI9JrGsSgSwQgT605OpY+rrJRNpQgPpw==",
+    ];
 }
 
 /// <summary>
