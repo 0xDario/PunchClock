@@ -73,7 +73,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                var signIn = new SignInWindow(_services.Accounts) { Owner = this };
+                var signIn = new SignInWindow(_services.Accounts, _services.Recovery) { Owner = this };
                 admin = signIn.ShowDialog() == true ? signIn.User : null;
             }
 
