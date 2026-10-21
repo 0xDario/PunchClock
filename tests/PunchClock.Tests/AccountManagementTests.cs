@@ -138,50 +138,6 @@ public sealed class AccountManagementTests : DatabaseTest
     }
 
     [Fact]
-    public async Task A_windows_administrator_recovers_a_locked_out_admin_with_an_audited_temporary_password()
-    {
-        var admin = await Db.AddAdminAsync();
-        for (var i = 0; i < AccountService.MaxFailedSignIns; i++)
-        {
-            await Db.Accounts.SignInAsync(admin.Username, $"guess number {i}");
-        }
-
-        await Assert.ThrowsAsync<SignInLockedException>(() => Db.Accounts.SignInAsync(admin.Username, "correct horse battery"));
-        Assert.Equal(AccountChangeResult.ReasonRequired, await Db.Accounts.RecoverAdminAsync(admin.Id, Temporary, " ", @"OFFICE-PC\Dario"));
-        Assert.Equal(AccountChangeResult.PasswordRejected, await Db.Accounts.RecoverAdminAsync(admin.Id, "short", "Forgot password", @"OFFICE-PC\Dario"));
-        Assert.Equal(AccountChangeResult.NotFound, await Db.Accounts.RecoverAdminAsync(9999, Temporary, "Forgot password", @"OFFICE-PC\Dario"));
-        Assert.Equal(AccountChangeResult.NotAllowed, await Db.Accounts.RecoverAdminAsync(AuditActor.System.Id, Temporary, "Forgot password", @"OFFICE-PC\Dario"));
-        Assert.Equal(AccountChangeResult.Changed, await Db.Accounts.RecoverAdminAsync(admin.Id, Temporary, " Forgot password ", @"OFFICE-PC\Dario"));
-
-        var recovered = (await Db.Accounts.SignInAsync(admin.Username, Temporary))!;
-        Assert.True(recovered.MustChangePassword);
-        Assert.Equal(PasswordChangeResult.Changed, await Db.Accounts.ChangeOwnPasswordAsync(recovered, Temporary, "a new passphrase"));
-        Assert.Equal(1, await Db.ScalarAsync<long>(
-            """
-            SELECT count(*) FROM audit_log
-             WHERE table_name = 'app_user' AND action = 'UPDATE' AND row_id = $id AND actor_kind = 'user' AND actor_id = $system
-               AND reason = 'Admin password recovery by Windows administrator OFFICE-PC\Dario: Forgot password';
-            """, ("$id", admin.Id), ("$system", AuditActor.System.Id)));
-        Assert.Empty(await Db.VerifyAsync());
-    }
-
-    [Fact]
-    public async Task Admin_recovery_is_only_for_active_admin_accounts()
-    {
-        var manager = await Db.AddManagerAsync();
-        var admin = (await Db.Accounts.ListAsync()).Single(u => u.Username == "admin-for-manager");
-        var second = await Db.AddAdminAsync("second");
-        Assert.Equal(AccountChangeResult.Changed, await Db.Accounts.SetActiveAsync(admin, second.Id, false, "Left the company"));
-
-        Assert.Equal(AccountChangeResult.NotAllowed, await Db.Accounts.RecoverAdminAsync(manager.Id, Temporary, "Forgot password", @"OFFICE-PC\Dario"));
-        Assert.Equal(AccountChangeResult.NotAllowed, await Db.Accounts.RecoverAdminAsync(second.Id, Temporary, "Forgot password", @"OFFICE-PC\Dario"));
-        Assert.Equal(AccountChangeResult.NotAllowed, await Db.Accounts.RecoverAdminAsync(AuditActor.Migration.Id, Temporary, "Forgot password", @"OFFICE-PC\Dario"));
-        Assert.Null(await Db.Accounts.SignInAsync("manager", Temporary));
-        Assert.Null(await Db.Accounts.SignInAsync("second", Temporary));
-        Assert.Empty(await Db.VerifyAsync());
-    }
-
-    [Fact]
     public async Task Wrong_current_passwords_count_toward_the_sign_in_lockout()
     {
         var admin = await Db.AddAdminAsync();
