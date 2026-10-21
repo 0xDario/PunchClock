@@ -1,11 +1,9 @@
 <!-- PunchClock app icon at 16px, drawn on the pixel grid so edges stay sharp. Used for the 16px image in PunchClock.ico. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
-<defs><linearGradient id="body" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2C5282"/><stop offset="1" stop-color="#1A365D"/></linearGradient></defs>
-<rect x="0.5" y="0.5" width="15" height="12" rx="2" fill="url(#body)" stroke="#5B8BC9" stroke-width="1"/>
-<circle cx="8" cy="6" r="5" fill="#14202E"/>
-<circle cx="8" cy="6" r="4" fill="#FFFFFF"/>
-<rect x="7" y="3" width="1" height="3" fill="#14202E"/>
-<rect x="5" y="5" width="3" height="1" fill="#14202E"/>
-<rect x="4.5" y="11.5" width="7" height="4" fill="#FFF7E3" stroke="#B8A57A" stroke-width="1"/>
-<rect x="2" y="11" width="12" height="1" fill="#0B1726"/>
+<rect x="8.5" y="0.5" width="7" height="10" fill="#FFF7E3" stroke="#B8A57A" stroke-width="1"/>
+<rect x="9" y="1" width="6" height="2" fill="#D63B2F"/>
+<circle cx="7" cy="9" r="7" fill="#14202E"/>
+<circle cx="7" cy="9" r="6" fill="#FFFFFF"/>
+<rect x="6" y="4" width="1" height="5" fill="#14202E"/>
+<rect x="3" y="8" width="4" height="1" fill="#14202E"/>
 </svg>

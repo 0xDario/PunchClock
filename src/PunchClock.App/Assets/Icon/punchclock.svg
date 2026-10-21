@@ -1,63 +1,53 @@
-<!-- PunchClock app icon, 40px and up: a wall time clock with a time card in its slot.
+<!-- PunchClock app icon, 40px and up: a wall clock with a time card tucked behind it.
      Smaller sizes have their own pixel-aligned drawings (punchclock-16/24/32.svg).
      Rebuild PunchClock.ico with build_icon.py after editing any of them. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
-  <defs>
-    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2C5282"/>
-      <stop offset="1" stop-color="#1A365D"/>
-    </linearGradient>
-  </defs>
-
-  <!-- Clock body; the light rim keeps it visible on a dark taskbar. -->
-  <rect x="36" y="10" width="184" height="200" rx="30" fill="url(#body)" stroke="#5B8BC9" stroke-width="4"/>
-
-  <!-- Time card, with printed in (dark) and out (red) times. -->
-  <rect x="80" y="168" width="96" height="84" rx="6" fill="#FFF7E3" stroke="#B8A57A" stroke-width="4"/>
-  <g stroke="#D8C9A3" stroke-width="3">
-    <line x1="90" y1="195" x2="166" y2="195"/>
-    <line x1="90" y1="207" x2="166" y2="207"/>
-    <line x1="90" y1="219" x2="166" y2="219"/>
-    <line x1="90" y1="231" x2="166" y2="231"/>
-    <line x1="90" y1="243" x2="166" y2="243"/>
+  <!-- Time card, tilted behind the clock, with printed in (dark) and out (red) times. -->
+  <g transform="rotate(12 176 105)">
+    <rect x="118" y="30" width="116" height="150" rx="7" fill="#FFF7E3" stroke="#B8A57A" stroke-width="4"/>
+    <path d="M118 51 V37 a7 7 0 0 1 7 -7 H227 a7 7 0 0 1 7 7 V51 Z" fill="#D63B2F"/>
+    <g stroke="#D8C9A3" stroke-width="3">
+      <line x1="130" y1="78" x2="222" y2="78"/>
+      <line x1="130" y1="98" x2="222" y2="98"/>
+      <line x1="130" y1="118" x2="222" y2="118"/>
+      <line x1="130" y1="138" x2="222" y2="138"/>
+      <line x1="130" y1="158" x2="222" y2="158"/>
+    </g>
+    <g fill="#14202E" fill-opacity="0.75">
+      <rect x="134" y="66" width="35" height="6" rx="2"/>
+      <rect x="134" y="86" width="35" height="6" rx="2"/>
+      <rect x="134" y="106" width="35" height="6" rx="2"/>
+    </g>
+    <g fill="#D63B2F">
+      <rect x="183" y="66" width="35" height="6" rx="2"/>
+      <rect x="183" y="86" width="35" height="6" rx="2"/>
+    </g>
   </g>
-  <g fill="#14202E" fill-opacity="0.75">
-    <rect x="93" y="188" width="29" height="4" rx="2"/>
-    <rect x="93" y="200" width="29" height="4" rx="2"/>
-    <rect x="93" y="212" width="29" height="4" rx="2"/>
-  </g>
-  <g fill="#D63B2F">
-    <rect x="134" y="188" width="29" height="4" rx="2"/>
-    <rect x="134" y="200" width="29" height="4" rx="2"/>
-  </g>
-
-  <!-- Card slot, drawn over the card's top edge. -->
-  <rect x="62" y="164" width="132" height="14" rx="7" fill="#0B1726"/>
 
   <!-- Clock face. -->
-  <circle cx="128" cy="92" r="68" fill="#14202E"/>
-  <circle cx="128" cy="92" r="60" fill="#FFFFFF"/>
+  <circle cx="110" cy="140" r="98" fill="#14202E"/>
+  <circle cx="110" cy="140" r="87" fill="#FFFFFF"/>
   <g stroke="#14202E" stroke-linecap="round">
-    <g stroke-width="5">
-      <line x1="128" y1="38" x2="128" y2="50"/>
-      <line x1="128" y1="38" x2="128" y2="50" transform="rotate(90 128 92)"/>
-      <line x1="128" y1="38" x2="128" y2="50" transform="rotate(180 128 92)"/>
-      <line x1="128" y1="38" x2="128" y2="50" transform="rotate(270 128 92)"/>
+    <g stroke-width="7">
+      <line x1="110" y1="62" x2="110" y2="80"/>
+      <line x1="110" y1="62" x2="110" y2="80" transform="rotate(90 110 140)"/>
+      <line x1="110" y1="62" x2="110" y2="80" transform="rotate(180 110 140)"/>
+      <line x1="110" y1="62" x2="110" y2="80" transform="rotate(270 110 140)"/>
     </g>
-    <g stroke-width="2.5">
-      <line x1="128" y1="38" x2="128" y2="45" transform="rotate(30 128 92)"/>
-      <line x1="128" y1="38" x2="128" y2="45" transform="rotate(60 128 92)"/>
-      <line x1="128" y1="38" x2="128" y2="45" transform="rotate(120 128 92)"/>
-      <line x1="128" y1="38" x2="128" y2="45" transform="rotate(150 128 92)"/>
-      <line x1="128" y1="38" x2="128" y2="45" transform="rotate(210 128 92)"/>
-      <line x1="128" y1="38" x2="128" y2="45" transform="rotate(240 128 92)"/>
-      <line x1="128" y1="38" x2="128" y2="45" transform="rotate(300 128 92)"/>
-      <line x1="128" y1="38" x2="128" y2="45" transform="rotate(330 128 92)"/>
+    <g stroke-width="3.5">
+      <line x1="110" y1="62" x2="110" y2="72" transform="rotate(30 110 140)"/>
+      <line x1="110" y1="62" x2="110" y2="72" transform="rotate(60 110 140)"/>
+      <line x1="110" y1="62" x2="110" y2="72" transform="rotate(120 110 140)"/>
+      <line x1="110" y1="62" x2="110" y2="72" transform="rotate(150 110 140)"/>
+      <line x1="110" y1="62" x2="110" y2="72" transform="rotate(210 110 140)"/>
+      <line x1="110" y1="62" x2="110" y2="72" transform="rotate(240 110 140)"/>
+      <line x1="110" y1="62" x2="110" y2="72" transform="rotate(300 110 140)"/>
+      <line x1="110" y1="62" x2="110" y2="72" transform="rotate(330 110 140)"/>
     </g>
     <!-- 9:00, start of shift. -->
-    <line x1="128" y1="92" x2="98" y2="92" stroke-width="7"/>
-    <line x1="128" y1="92" x2="128" y2="54" stroke-width="5"/>
+    <line x1="110" y1="140" x2="66" y2="140" stroke-width="10"/>
+    <line x1="110" y1="140" x2="110" y2="84" stroke-width="7"/>
   </g>
-  <line x1="122.5" y1="82.5" x2="151.5" y2="132.5" stroke="#D63B2F" stroke-width="2.5" stroke-linecap="round"/>
-  <circle cx="128" cy="92" r="4.5" fill="#D63B2F"/>
+  <line x1="102" y1="126" x2="144" y2="199" stroke="#D63B2F" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="110" cy="140" r="6" fill="#D63B2F"/>
 </svg>
