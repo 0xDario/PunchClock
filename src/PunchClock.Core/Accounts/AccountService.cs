@@ -242,6 +242,46 @@ public sealed class AccountService(IPunchClockStore store, IPinHasher passwordHa
     }
 
     /// <summary>
+    /// Sets a temporary password on an admin account when no admin can sign in to reset it, for
+    /// example when the only admin forgot their password. The owner must replace it at their next
+    /// sign-in, and the account's sign-in lockout clears. Nobody is signed in, so the system account
+    /// makes the change; the audit row's reason names the Windows user who did it and why.
+    /// The caller must have confirmed that <paramref name="windowsUser"/> is a Windows administrator
+    /// running PunchClock elevated, the same check that guards creating the first admin.
+    /// </summary>
+    public async Task<AccountChangeResult> RecoverAdminAsync(
+        long userId, string temporaryPassword, string reason, string windowsUser, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(windowsUser);
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            return AccountChangeResult.ReasonRequired;
+        }
+
+        if (!IsAcceptablePassword(temporaryPassword))
+        {
+            return AccountChangeResult.PasswordRejected;
+        }
+
+        await using var uow = await store.BeginAsync(ct);
+        var target = await uow.FindUserAsync(userId, ct);
+        if (target is null)
+        {
+            return AccountChangeResult.NotFound;
+        }
+
+        if (target is not { Role: UserRole.Admin, IsActive: true, IsServiceAccount: false })
+        {
+            return AccountChangeResult.NotAllowed;
+        }
+
+        uow.ActAs(AuditActor.System, $"Admin password recovery by Windows administrator {windowsUser.Trim()}: {reason.Trim()}");
+        await uow.SetUserPasswordAsync(userId, passwordHasher.Hash(temporaryPassword), mustChange: true, ct);
+        await uow.CommitAsync(ct);
+        return AccountChangeResult.Changed;
+    }
+
+    /// <summary>
     /// Links an account to the employee its owner punches as, or unlinks it (null). An admin cannot
     /// change their own link, so nobody can unlink themselves to correct their own punches.
     /// </summary>
