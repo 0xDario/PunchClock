@@ -1,27 +1,17 @@
 # PunchClock
 
-> **v2 rewrite in progress.** The new app lives in `src/` and `tests/` (`PunchClock.Modern.sln`): .NET 10 WPF on a local SQLite database. Everything below describes the legacy v1 WinForms + Access app in `PunchClock/`, which is kept unchanged until the data migration is done. See [v2 rewrite](#v2-rewrite) at the end, and [Moving from the old PunchClock app](#moving-from-the-old-punchclock-app) for the switchover.
+Offline punch clock for Windows 10/11 (64-bit). Staff punch in and out at a shared kiosk with their name and PIN; everything is stored in a local SQLite database, with no server or internet connection needed.
 
-_A basic Windows Forms Punch Clock application that allows staff to Punch In/Out of work._
+- **Tamper-evident audit log**: every change to the database, including each manager correction, is recorded with who, when, why and the before/after values in a hash chain that the app verifies at startup.
+- **Manager punch corrections**: add a missing punch, change or void one, always with a reason.
+- **Pay-period reports**, CSV export and verified backups.
+- **Migration** from the legacy v1 app (WinForms + Microsoft Access), checked and audit-logged.
 
-* Staff select their name from a dropdown list and enter their unique 3-6 digit pin code in order to punch in/out of their shift.
+Download `PunchClock-Setup-<version>.exe` from [Releases](https://github.com/0xDario/PunchClock/releases). Moving from the old app: see [Moving from the old PunchClock app](#moving-from-the-old-punchclock-app).
 
-* Action to Punch In/Out is automatically determined by the last action a staff member performed. If they last **'punched in'**, their next action in the system would be to **'punch out'**
+The app is .NET 10 WPF in `src/` and `tests/` (`PunchClock.Modern.sln`). The legacy v1 app stays in `PunchClock/`, unchanged, for reference; see [Legacy v1 app](#legacy-v1-app).
 
-* Data is saved to a Microsoft Access Database **[PunchClock.accdb]**. Reporting can be generated to allow for easy calculation of the pay owed an employee.
-
-* Credentials for Microsoft Access Database:
-    |username|password|
-    |----|-------|
-    |Admin|admin123|
-
-Application in Action:
-![Punch Clock Windows Form Demo](https://github.com/0xDario/PunchClock/blob/master/PunchClock.gif)
-
-## Dependencies
-- [Microsoft.ACE.OLEDB12.0](https://www.microsoft.com/en-us/download/details.aspx?id=13255)
-
-## v2 rewrite
+## Architecture
 
 | Project | Role |
 |---|---|
@@ -118,3 +108,24 @@ Recovery does not protect the database file itself: anyone who can use the PC ca
 3. `.github/workflows/release.yml` runs the tests, publishes the app and the importer self-contained for `win-x64`, bundles the exporter, builds `PunchClock-Setup-<version>.exe` (Inno Setup, `installer/PunchClock.iss`) and `SHA256SUMS.txt`, and attaches them to a **draft** release whose notes are the CHANGELOG section, a Full Changelog link to the previous tag, and the download table (`.github/scripts/release-notes.sh v<version>` prints them locally). Check the draft, then publish it.
 
 Pull requests that touch packaging build the same installer as a workflow artifact, without a release.
+
+## Legacy v1 app
+
+_A basic Windows Forms Punch Clock application that allows staff to Punch In/Out of work._
+
+* Staff select their name from a dropdown list and enter their unique 3-6 digit pin code in order to punch in/out of their shift.
+
+* Action to Punch In/Out is automatically determined by the last action a staff member performed. If they last **'punched in'**, their next action in the system would be to **'punch out'**
+
+* Data is saved to a Microsoft Access Database **[PunchClock.accdb]**. Reporting can be generated to allow for easy calculation of the pay owed an employee.
+
+* Credentials for Microsoft Access Database:
+    |username|password|
+    |----|-------|
+    |Admin|admin123|
+
+Application in Action:
+![Punch Clock Windows Form Demo](https://github.com/0xDario/PunchClock/blob/master/PunchClock.gif)
+
+**Dependencies:**
+- [Microsoft.ACE.OLEDB12.0](https://www.microsoft.com/en-us/download/details.aspx?id=13255)
