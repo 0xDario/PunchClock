@@ -2,11 +2,12 @@
 
 Each GitHub release takes its notes from its section below. Before tagging a release, add a `## vX.Y.Z - YYYY-MM-DD` section for it, using the same headings (Features Added, Bugs Fixed). The release build stops if the section is missing. v1.x is the legacy WinForms app; its notes are on the [Releases](https://github.com/0xDario/PunchClock/releases) page.
 
-## v2.0.4 - 2026-10-21
+## v2.0.3 - 2026-10-21
 
-Adds a way back into PunchClock when the only admin forgets their password. The database and the switchover tools are the same as in 2.0.2, so 2.0.4 installs over 2.0.2 or 2.0.3 and keeps all data.
+A new app icon, and a way back into PunchClock when the only admin forgets their password. The database and the switchover tools are the same as in 2.0.2, so 2.0.3 installs over 2.0.2, keeps all data and is equally safe for the switchover.
 
 Features Added:
+- New PunchClock icon: a clock with a time card, so the app is easy to spot. It appears on the desktop and Start menu shortcuts, the taskbar, every window's title bar, the import tool and the setup program
 - Forgot password on the Admin sign-in window. Another admin can still reset a forgotten password from Accounts; when no admin can sign in, PunchClock shows a recovery challenge, the site owner signs it with their owner key on their own computer, and the response lets the kiosk set a temporary password once. The account's owner must choose a new password at their next sign-in, and its sign-in lockout is cleared
 - Being at the kiosk PC is not enough to recover an account: the owner key never leaves the owner's computer, and each challenge works once, for 60 minutes
 - Every recovery is kept in the audit log: which account, when, on which PC, the challenge, the owner key's fingerprint and the reason given
