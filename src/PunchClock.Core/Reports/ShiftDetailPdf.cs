@@ -35,7 +35,6 @@ public static class ShiftDetailPdf
     private const double RowHeight = 17;
     private const double NoteHeight = 10.5;
     private const double GroupHeight = 24;
-    private const int MaxNoteLines = 30;
 
     public static byte[] Render(ShiftDetailReport report)
     {
@@ -45,6 +44,7 @@ public static class ShiftDetailPdf
         if (report.Employees.Count == 0)
         {
             pdf.Text(Left, y + 16, "No punches in this period.", PdfFont.Italic, 11, 0.3);
+            y += 28;
         }
 
         foreach (var employee in report.Employees)
@@ -64,7 +64,21 @@ public static class ShiftDetailPdf
                     y = GroupHeader(pdf, employee, NewPage(pdf, report), continued: true);
                 }
 
-                y = Row(pdf, row, notes, y, shaded: i % 2 == 1);
+                // A row with more notes than a page holds (never seen in practice) carries on
+                // over the next pages; nothing is dropped.
+                var printed = 0;
+                do
+                {
+                    var room = Math.Max(1, (int)((ContentBottom - y - RowHeight - 3) / NoteHeight));
+                    var chunk = notes.Skip(printed).Take(room).ToList();
+                    y = Row(pdf, row, chunk, y, shaded: i % 2 == 1, continuation: printed > 0);
+                    printed += chunk.Count;
+                    if (printed < notes.Count)
+                    {
+                        y = GroupHeader(pdf, employee, NewPage(pdf, report), continued: true);
+                    }
+                }
+                while (printed < notes.Count);
             }
 
             y += 10;
@@ -80,17 +94,8 @@ public static class ShiftDetailPdf
 
     private static double Height(IReadOnlyList<string> notes) => RowHeight + notes.Count * NoteHeight + (notes.Count > 0 ? 3 : 0);
 
-    private static IReadOnlyList<string> NoteLines(ShiftDetailRow row)
-    {
-        var lines = row.Notes.SelectMany(n => PdfDocument.Wrap(n, PdfFont.Italic, 8, HoursRight - InX)).ToList();
-        if (lines.Count > MaxNoteLines)
-        {
-            // Never seen in practice; keeps one row from running off the page.
-            lines = [.. lines.Take(MaxNoteLines - 1), "More changes than fit here: see the corrections CSV export for this period."];
-        }
-
-        return lines;
-    }
+    private static IReadOnlyList<string> NoteLines(ShiftDetailRow row) =>
+        row.Notes.SelectMany(n => PdfDocument.Wrap(n, PdfFont.Italic, 8, HoursRight - InX)).ToList();
 
     private static double NewPage(PdfDocument pdf, ShiftDetailReport report)
     {
@@ -121,7 +126,8 @@ public static class ShiftDetailPdf
         return y + GroupHeight;
     }
 
-    private static double Row(PdfDocument pdf, ShiftDetailRow row, IReadOnlyList<string> notes, double y, bool shaded)
+    /// <param name="continuation">Only the rest of the notes of a row begun on an earlier page.</param>
+    private static double Row(PdfDocument pdf, ShiftDetailRow row, IReadOnlyList<string> notes, double y, bool shaded, bool continuation)
     {
         var height = Height(notes);
         if (shaded)
@@ -130,6 +136,13 @@ public static class ShiftDetailPdf
         }
 
         var baseline = y + 12;
+        if (continuation)
+        {
+            pdf.Text(InX, baseline, "Notes continued from the previous page", PdfFont.Italic, 9, 0.2);
+            WriteNotes(pdf, notes, baseline);
+            return y + height;
+        }
+
         var removed = row.Kind is ShiftDetailKind.Voided or ShiftDetailKind.Moved;
         var gray = removed ? 0.45 : 0;
         if (row.SortTime != DateTime.MinValue)
@@ -162,12 +175,16 @@ public static class ShiftDetailPdf
             }, PdfFont.Italic, 9, 0.2);
         }
 
+        WriteNotes(pdf, notes, baseline);
+        return y + height;
+    }
+
+    private static void WriteNotes(PdfDocument pdf, IReadOnlyList<string> notes, double baseline)
+    {
         for (var i = 0; i < notes.Count; i++)
         {
             pdf.Text(InX, baseline + 11 + i * NoteHeight, notes[i], PdfFont.Italic, 8, 0.25);
         }
-
-        return y + height;
     }
 
     private static void Summary(PdfDocument pdf, ShiftDetailReport report, double y)

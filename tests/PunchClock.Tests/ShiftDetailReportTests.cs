@@ -192,6 +192,30 @@ public sealed partial class ShiftDetailReportTests : DatabaseTest
     }
 
     [Fact]
+    public async Task A_punch_that_leaves_the_period_twice_is_listed_once()
+    {
+        var ada = await Db.AddEmployeeAsync();
+        var punch = await Add(ada, PunchDirection.In, new DateTime(2026, 9, 10, 8, 0, 0));
+        (DateTime At, string Why)[] moves =
+        [
+            (new(2026, 9, 25, 8, 0, 0), "Moved to the wrong week"),
+            (new(2026, 9, 11, 8, 0, 0), "Back to the right week"),
+            (new(2026, 9, 26, 8, 0, 0), "Belongs to the next period"),
+        ];
+        foreach (var (at, why) in moves)
+        {
+            Assert.Equal(CorrectionResult.Corrected, await Db.Corrections.AdjustAsync(_manager, punch, PunchDirection.In, at, why));
+            punch = await NewestPunch();
+        }
+
+        var row = (await Db.Reports.ShiftDetailReportAsync(_manager, From, To)).Employees.Single().Rows.Single();
+
+        Assert.Equal((ShiftDetailKind.Moved, new DateTime(2026, 9, 11, 8, 0, 0)), (row.Kind, row.InLocal!.Value));
+        Assert.Equal(4, row.Notes.Count);
+        Assert.EndsWith("Belongs to the next period", row.Notes[^1], StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task The_pdf_prints_the_old_layout_and_is_audited()
     {
         var ada = await Db.AddEmployeeAsync(first: "Zoë", last: "O'Brien (Jo)");
@@ -271,8 +295,27 @@ public sealed partial class ShiftDetailReportTests : DatabaseTest
         var text = PdfText(ShiftDetailPdf.Render(report));
 
         Assert.Contains("No punches in this period.", text);
+        var empty = Baseline(report, "No punches in this period.");
+        var summary = Baseline(report, "Summary");
+        Assert.True(summary - empty >= 12, $"Summary at {summary} overlaps the message at {empty}.");
         Assert.Contains("Printed September 23, 2026 9:00 AM by Ann (ann)", text);
         Assert.DoesNotContain("Audit log entry", text);
+    }
+
+    [Fact]
+    public void Notes_longer_than_a_page_carry_over_and_are_all_printed()
+    {
+        var notes = Enumerable.Range(1, 130).Select(i => $"Note number {i} about this punch").ToList();
+        var row = new ShiftDetailRow(ShiftDetailKind.Counted, new(2026, 9, 8, 8, 0, 0), new(2026, 9, 8, 16, 0, 0), 480, true, true, notes);
+        var report = new ShiftDetailReport(From, To, [new ShiftDetailEmployee(1, null, "Ada", "Lovelace", [row], 1, 480)],
+            new DateTimeOffset(2026, 9, 23, 9, 0, 0, TimeSpan.FromHours(-4)), "Ann (ann)", 7, new string('a', 64));
+
+        var text = PdfText(ShiftDetailPdf.Render(report));
+
+        Assert.All(notes, n => Assert.Contains(n + "\n", text + "\n"));
+        Assert.Contains("Notes continued from the previous page", text);
+        Assert.Contains("Ada Lovelace (continued)", text);
+        Assert.Single(Regex.Matches(text, "9/8/2026 8:00:00 AM"));   // the shift itself is printed once
     }
 
     [Theory]
@@ -300,6 +343,15 @@ public sealed partial class ShiftDetailReportTests : DatabaseTest
         Assert.Equal("one two three", lines[0]);
         Assert.All(lines, l => Assert.True(PdfDocument.Width(l, PdfFont.Regular, 10) <= 100));
         Assert.Equal(80, string.Concat(lines.Skip(1)).Length);
+    }
+
+    /// <summary>Distance from the page top of the first <c>Tj</c> drawing <paramref name="text"/>.</summary>
+    private static double Baseline(ShiftDetailReport report, string text)
+    {
+        var content = Inflate(ShiftDetailPdf.Render(report)).First();
+        var m = Regex.Match(content, @"([\d.]+) ([\d.]+) Td \(" + Regex.Escape(text) + @"\) Tj");
+        Assert.True(m.Success, $"'{text}' not drawn.");
+        return PdfDocument.PageHeight - double.Parse(m.Groups[2].Value, ShiftDetailFormat.Culture);
     }
 
     private static DateTime Parse(string oldReportTime) => DateTime.Parse(oldReportTime, ShiftDetailFormat.Culture);

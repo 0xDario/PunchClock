@@ -211,7 +211,9 @@ public sealed class ReportService(IPunchClockStore store)
                     later.Add(next);
                 }
 
-                if (!LeavesPeriod(later[0]) || !LeavesPeriod(later[^1]))
+                // Any later version back in the period is the one shown; a chain that leaves the
+                // period more than once is listed only at its last version in it.
+                if (!later.All(LeavesPeriod))
                 {
                     continue;
                 }
