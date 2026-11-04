@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Input;
@@ -313,20 +314,24 @@ public partial class AdminWindow : Window
     private async void ExportCorrections_Click(object sender, RoutedEventArgs e) =>
         await ExportAsync("corrections", (from, to, path) => _services.Reports.ExportCorrectionsAsync(_admin, from, to, path));
 
-    private async Task ExportAsync(string kind, Func<DateOnly, DateOnly, string, Task<ExportResult>> export)
+    private async void PrintShiftDetail_Click(object sender, RoutedEventArgs e) =>
+        await ExportAsync("hours-worked", (from, to, path) => _services.Reports.ExportShiftDetailPdfAsync(_admin, from, to, path), pdf: true);
+
+    private async Task ExportAsync(string kind, Func<DateOnly, DateOnly, string, Task<ExportResult>> export, bool pdf = false)
     {
         if (ReadReportPeriod() is not { } period)
         {
             return;
         }
 
+        var extension = pdf ? ".pdf" : ".csv";
         var dialog = new SaveFileDialog
         {
-            Title = "Export to CSV",
-            Filter = "CSV files (*.csv)|*.csv",
-            DefaultExt = ".csv",
+            Title = pdf ? "Save the report to print" : "Export to CSV",
+            Filter = pdf ? "PDF files (*.pdf)|*.pdf" : "CSV files (*.csv)|*.csv",
+            DefaultExt = extension,
             AddExtension = true,
-            FileName = string.Create(CultureInfo.InvariantCulture, $"{kind}-{period.From:yyyy-MM-dd}-to-{period.To:yyyy-MM-dd}.csv"),
+            FileName = string.Create(CultureInfo.InvariantCulture, $"{kind}-{period.From:yyyy-MM-dd}-to-{period.To:yyyy-MM-dd}{extension}"),
         };
         if (dialog.ShowDialog(this) != true)
         {
@@ -337,7 +342,22 @@ public partial class AdminWindow : Window
         await RunAsync(async () =>
         {
             var result = await Task.Run(() => export(period.From, period.To, path));
-            Show($"Saved {result.Rows} row(s) to {result.Path} and recorded the export in the audit log.");
+            if (!pdf)
+            {
+                Show($"Saved {result.Rows} row(s) to {result.Path} and recorded the export in the audit log.");
+                return;
+            }
+
+            try
+            {
+                // Opens in the PC's PDF viewer (Edge by default), where it prints.
+                Process.Start(new ProcessStartInfo(result.Path) { UseShellExecute = true })?.Dispose();
+                Show($"Saved {result.Path} and recorded it in the audit log. It is open in your PDF viewer to print.");
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+            {
+                Show($"Saved {result.Path} and recorded it in the audit log. Open that file to print it.");
+            }
         });
     }
 

@@ -327,13 +327,7 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
         return await ReadAllAsync(command, r => new CorrectionExportRow(
             r.GetInt64(0),
             SqliteTime.Parse(r.GetString(1)),
-            r.GetString(2) switch
-            {
-                "add" => CorrectionAction.Add,
-                "adjust" => CorrectionAction.Adjust,
-                "void" => CorrectionAction.Void,
-                var other => throw new InvalidDataException($"Unknown correction action '{other}'."),
-            },
+            ToAction(r.GetString(2)),
             r.GetInt64(3),
             r.GetString(4),
             r.IsDBNull(5) ? null : r.GetInt64(5),
@@ -344,6 +338,74 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
             r.GetString(9),
             r.GetString(10),
             r.GetString(11)), ct);
+    }
+
+    public async Task<IReadOnlyList<CorrectionHistoryRow>> ListCorrectionHistoryAsync(
+        DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default)
+    {
+        // Seed: corrections that made or replaced a punch in the range. Then follow each chain both
+        // ways: back from a replaced punch to the correction that made it, and on from a punch a
+        // correction made to the correction that later replaced it. A punch changed twice shows
+        // both changes even when another version of it lies outside the range.
+        await using var command = Command($"""
+            WITH RECURSIVE chain(id) AS (
+              SELECT p.correction_id FROM punch p
+               WHERE p.correction_id IS NOT NULL AND p.occurred_utc >= $from AND p.occurred_utc < $to
+              UNION
+              SELECT c.id FROM punch_correction c JOIN punch t ON t.id = c.target_punch_id
+               WHERE t.occurred_utc >= $from AND t.occurred_utc < $to
+              UNION
+              SELECT t.correction_id FROM chain
+                JOIN punch_correction c ON c.id = chain.id
+                JOIN punch t ON t.id = c.target_punch_id
+               WHERE t.correction_id IS NOT NULL
+              UNION
+              SELECT n.id FROM chain
+                JOIN punch made ON made.correction_id = chain.id
+                JOIN punch_correction n ON n.target_punch_id = made.id
+            )
+            SELECT c.id, c.created_utc, c.action, c.employee_id, c.new_direction, c.new_occurred_utc,
+                   c.new_utc_offset_minutes, c.reason, u.display_name,
+                   (SELECT n.id FROM punch n WHERE n.correction_id = c.id), {Prefixed("t")}
+              FROM punch_correction c
+              JOIN chain ON chain.id = c.id
+              JOIN app_user u ON u.id = c.actor_user_id
+              LEFT JOIN punch t ON t.id = c.target_punch_id
+             ORDER BY c.id;
+            """);
+        command.Parameters.AddWithValue("$from", SqliteTime.ToText(fromUtc));
+        command.Parameters.AddWithValue("$to", SqliteTime.ToText(toUtc));
+        return await ReadAllAsync(command, r => new CorrectionHistoryRow(
+            r.GetInt64(0),
+            SqliteTime.Parse(r.GetString(1)),
+            ToAction(r.GetString(2)),
+            r.GetInt64(3),
+            r.IsDBNull(10) ? null : MapPunch(r, 10),
+            r.IsDBNull(9) ? null : r.GetInt64(9),
+            r.IsDBNull(4) ? null : FromDb(r.GetString(4)),
+            r.IsDBNull(5) ? null : SqliteTime.Parse(r.GetString(5)),
+            r.IsDBNull(6) ? null : r.GetInt32(6),
+            r.GetString(7),
+            r.GetString(8)), ct);
+    }
+
+    public async Task<IReadOnlyList<long>> ListPunchesMissingInAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default)
+    {
+        await using var command = Command("""
+            SELECT punch_id FROM punch_exception_v
+             WHERE kind = 'missing_in' AND occurred_utc >= $from AND occurred_utc < $to
+             ORDER BY punch_id;
+            """);
+        command.Parameters.AddWithValue("$from", SqliteTime.ToText(fromUtc));
+        command.Parameters.AddWithValue("$to", SqliteTime.ToText(toUtc));
+        return await ReadAllAsync(command, r => r.GetInt64(0), ct);
+    }
+
+    public async Task<(long Seq, string Hash)> GetAuditHeadAsync(CancellationToken ct = default)
+    {
+        await using var command = Command("SELECT seq, row_hash FROM audit_log ORDER BY seq DESC LIMIT 1;");
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? (reader.GetInt64(0), reader.GetString(1)) : (0, "");
     }
 
     public async Task<AppUser?> FindUserAsync(long userId, CancellationToken ct = default)
@@ -467,6 +529,14 @@ internal sealed class SqliteUnitOfWork(SqliteConnection connection, SqliteTransa
         reader.GetString(4),
         reader.GetInt64(5) == 1,
         reader.IsDBNull(6) ? null : reader.GetInt64(6));
+
+    private static CorrectionAction ToAction(string action) => action switch
+    {
+        "add" => CorrectionAction.Add,
+        "adjust" => CorrectionAction.Adjust,
+        "void" => CorrectionAction.Void,
+        var other => throw new InvalidDataException($"Unknown correction action '{other}'."),
+    };
 
     private const int PunchColumnCount = 7;
 

@@ -220,6 +220,11 @@
                     <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
                         <TextBlock Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,8"
                                    Text="Hours follow the old app's report: a shift counts in the period it starts in, if it also ends before the period does. Minutes are counted on the wall clock, so a shift across a daylight-saving change shows its elapsed hours separately. Every export is recorded in the audit log with the file's fingerprint." />
+                        <DockPanel Margin="0,0,0,8">
+                            <Button DockPanel.Dock="Left" Content="Print _hours worked (PDF)..." Click="PrintShiftDetail_Click" Padding="12,4" Margin="0,0,8,0" FontWeight="SemiBold" />
+                            <TextBlock Foreground="Gray" VerticalAlignment="Center" TextWrapping="Wrap"
+                                       Text="Every shift with its times, like the old report. Fix a wrong time on the Corrections tab, then print again." />
+                        </DockPanel>
                         <StackPanel Orientation="Horizontal">
                             <Button Content="Export _pay report CSV..." Click="ExportPayReport_Click" Padding="12,4" Margin="0,0,8,0" />
                             <Button Content="Export pu_nches CSV..." Click="ExportPunches_Click" Padding="12,4" Margin="0,0,8,0" />

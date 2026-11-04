@@ -91,12 +91,206 @@ public sealed class ReportService(IPunchClockStore store)
             return (bytes, rows);
         }, ct);
 
+    /// <summary>
+    /// Every shift in the period, one line each, as the old Access report printed them, with the
+    /// same totals as <see cref="PayReportAsync"/>. Shifts the pay report leaves out, voided punches
+    /// and punch-outs with no punch-in are listed too, and each punch a manager added or changed
+    /// carries who did it, when and why, so the printout can be checked against what happened.
+    /// </summary>
+    public async Task<ShiftDetailReport> ShiftDetailReportAsync(AppUser by, DateOnly from, DateOnly to, CancellationToken ct = default)
+    {
+        EnsureAllowed(by, from, to);
+        await using var uow = await store.BeginAsync(ct);
+        return await BuildShiftDetailAsync(uow, by, from, to, ct);
+    }
+
+    /// <summary>
+    /// <see cref="ShiftDetailReportAsync"/> as a PDF to print, recorded in the audit log like the
+    /// CSV exports. The printout names the audit log's newest entry, so a paper copy also anchors the log.
+    /// </summary>
+    public Task<ExportResult> ExportShiftDetailPdfAsync(AppUser by, DateOnly from, DateOnly to, string path, CancellationToken ct = default) =>
+        ExportAsync(by, "shift_detail", ".pdf", from, to, path, async uow =>
+        {
+            var report = await BuildShiftDetailAsync(uow, by, from, to, ct);
+            return (ShiftDetailPdf.Render(report), report.Employees.Sum(e => e.Rows.Count));
+        }, ct);
+
+    private static async Task<ShiftDetailReport> BuildShiftDetailAsync(
+        IPunchClockUnitOfWork uow, AppUser by, DateOnly from, DateOnly to, CancellationToken ct)
+    {
+        var zone = SiteTime.ResolveZone(await uow.GetSettingAsync(SiteSettingKeys.TimeZoneId, ct), TimeZoneInfo.Local);
+        var (fromUtc, toUtc) = SiteTime.CoveringUtcRange(From(from), From(to));
+        var shifts = (await uow.ListShiftsAsync(fromUtc, toUtc, ct)).Where(s => InPeriod(s.In.OccurredAtLocal.DateTime, from, to)).ToList();
+        var punches = (await uow.ListPunchesForExportAsync(fromUtc, toUtc, ct))
+            .Where(r => InPeriod(r.Punch.OccurredAtLocal.DateTime, from, to))
+            .ToList();
+        var missingIn = (await uow.ListPunchesMissingInAsync(fromUtc, toUtc, ct)).ToHashSet();
+
+        // A shift that starts in the period can end after it; its punch-out's history is needed too.
+        var historyTo = shifts.Select(s => s.Out?.OccurredAtUtc.AddMilliseconds(1)).Append(toUtc).Max()!.Value;
+        var history = await uow.ListCorrectionHistoryAsync(fromUtc, historyTo, ct);
+        var corrections = history.ToDictionary(c => c.Id);
+        var madeBy = history.Where(c => c.CreatedPunchId is not null).ToDictionary(c => c.CreatedPunchId!.Value);
+        var replacedBy = history.Where(c => c.Target is not null).ToDictionary(c => c.Target!.Id);
+
+        List<string> Notes(Punch punch)
+        {
+            // Walk back from the punch to the first version of it, then print oldest first.
+            var chain = new List<CorrectionHistoryRow>();
+            for (var id = punch.Id; madeBy.TryGetValue(id, out var c);)
+            {
+                chain.Add(c);
+                if (c.Target is not { } target)
+                {
+                    break;
+                }
+
+                id = target.Id;
+            }
+
+            chain.Reverse();
+            return chain.Select(c => Describe(c, zone)).ToList();
+        }
+
+        // No version of the punch is left in the period: voided, or changed to a time outside it.
+        bool LeavesPeriod(CorrectionHistoryRow c) => c.Action == CorrectionAction.Void
+            || !InPeriod(c.NewOccurredUtc!.Value.ToOffset(TimeSpan.FromMinutes(c.NewUtcOffsetMinutes!.Value)).DateTime, from, to);
+
+        var rows = new Dictionary<long, List<ShiftDetailRow>>();
+        var paid = new Dictionary<long, (int Shifts, long Minutes)>();
+        void Add(long employeeId, ShiftDetailRow row)
+        {
+            if (!rows.TryGetValue(employeeId, out var list))
+            {
+                rows[employeeId] = list = [];
+            }
+
+            list.Add(row);
+        }
+
+        foreach (var shift in shifts)
+        {
+            var (_, minutes, reason) = Classify(shift, from, to);
+            var notes = Notes(shift.In);
+            if (shift.Out is { } punchOut)
+            {
+                notes.AddRange(Notes(punchOut));
+            }
+
+            if (reason is not null)
+            {
+                notes.Add("Not counted. " + reason);
+            }
+            else
+            {
+                var (count, total) = paid.GetValueOrDefault(shift.EmployeeId);
+                paid[shift.EmployeeId] = (count + 1, total + minutes!.Value);
+            }
+
+            Add(shift.EmployeeId, new ShiftDetailRow(
+                reason is null ? ShiftDetailKind.Counted : ShiftDetailKind.NotCounted,
+                shift.In.OccurredAtLocal.DateTime,
+                shift.Out?.OccurredAtLocal.DateTime,
+                minutes,
+                shift.In.Source == PunchSource.Correction,
+                shift.Out?.Source == PunchSource.Correction,
+                notes));
+        }
+
+        foreach (var row in punches)
+        {
+            var punch = row.Punch;
+            if (row.SupersededByCorrectionId is { } supersededBy)
+            {
+                // A replaced punch whose latest version is in the period is shown with that version.
+                // Otherwise the chain gets one row, at its last version in the period, saying what
+                // became of it: voided, or moved out of the period.
+                var later = new List<CorrectionHistoryRow> { corrections[supersededBy] };
+                while (later[^1].CreatedPunchId is { } made && replacedBy.TryGetValue(made, out var next))
+                {
+                    later.Add(next);
+                }
+
+                // Any later version back in the period is the one shown; a chain that leaves the
+                // period more than once is listed only at its last version in it.
+                if (!later.All(LeavesPeriod))
+                {
+                    continue;
+                }
+
+                var notes = Notes(punch);
+                notes.AddRange(later.Select(c => Describe(c, zone)));
+                Add(punch.EmployeeId, Single(
+                    later[^1].Action == CorrectionAction.Void ? ShiftDetailKind.Voided : ShiftDetailKind.Moved, punch, notes));
+            }
+            else if (missingIn.Contains(punch.Id))
+            {
+                var notes = Notes(punch);
+                notes.Add("No punch-in before this punch-out: add the missing punch-in on the Corrections tab.");
+                Add(punch.EmployeeId, Single(ShiftDetailKind.MissingIn, punch, notes));
+            }
+        }
+
+        var employees = await uow.ListEmployeesAsync(activeOnly: false, ct);
+        var head = await uow.GetAuditHeadAsync(ct);
+        var now = TimeZoneInfo.ConvertTime(await uow.GetDatabaseUtcNowAsync(ct), zone);
+        return new ShiftDetailReport(
+            from,
+            to,
+            employees.Where(e => rows.ContainsKey(e.Id))
+                .OrderBy(e => e.LastName, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(e => e.FirstName, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(e => e.Id)
+                .Select(e =>
+                {
+                    var (count, minutes) = paid.GetValueOrDefault(e.Id);
+                    return new ShiftDetailEmployee(
+                        e.Id, e.LegacyId, e.FirstName, e.LastName,
+                        rows[e.Id].OrderBy(r => r.SortTime).ThenBy(r => r.Kind).ToList(), count, minutes);
+                })
+                .ToList(),
+            now,
+            $"{by.DisplayName} ({by.Username})",
+            head.Seq,
+            head.Hash);
+    }
+
+    private static ShiftDetailRow Single(ShiftDetailKind kind, Punch punch, IReadOnlyList<string> notes)
+    {
+        var at = punch.OccurredAtLocal.DateTime;
+        var isIn = punch.Direction == PunchDirection.In;
+        var changed = punch.Source == PunchSource.Correction;
+        return new ShiftDetailRow(kind, isIn ? at : null, isIn ? null : at, null, isIn && changed, !isIn && changed, notes);
+    }
+
+    /// <summary>One correction as a printed note, e.g. "In changed from 7:50:41 AM by Ann Lee on 9/9/2026: ...".</summary>
+    private static string Describe(CorrectionHistoryRow c, TimeZoneInfo zone)
+    {
+        var made = TimeZoneInfo.ConvertTime(c.CreatedUtc, zone).ToString(ShiftDetailFormat.Date, ShiftDetailFormat.Culture);
+        var by = $"by {c.ActorName} on {made}: {c.Reason.Trim()}";
+        switch (c.Action)
+        {
+            case CorrectionAction.Add:
+                return $"{Label(c.NewDirection!.Value)} added {by}";
+            case CorrectionAction.Void:
+                return $"{Label(c.Target!.Direction)} at {ShiftDetailFormat.Time(c.Target.OccurredAtLocal.DateTime)} voided {by}";
+            default:
+                var old = c.Target!;
+                var now = c.NewOccurredUtc!.Value.ToOffset(TimeSpan.FromMinutes(c.NewUtcOffsetMinutes!.Value)).DateTime;
+                var direction = old.Direction == c.NewDirection
+                    ? Label(old.Direction)
+                    : $"{Label(old.Direction)} (now {Label(c.NewDirection!.Value)})";
+                return $"{direction} changed from {ShiftDetailFormat.Time(old.OccurredAtLocal.DateTime)} to {ShiftDetailFormat.Time(now)} {by}";
+        }
+    }
+
+    private static string Label(PunchDirection direction) => direction == PunchDirection.In ? "In" : "Out";
+
     private static async Task<PayReport> BuildPayReportAsync(IPunchClockUnitOfWork uow, DateOnly from, DateOnly to, CancellationToken ct)
     {
         var (fromUtc, toUtc) = SiteTime.CoveringUtcRange(From(from), From(to));
         var shifts = await uow.ListShiftsAsync(fromUtc, toUtc, ct);
         var employees = (await uow.ListEmployeesAsync(activeOnly: false, ct)).ToDictionary(e => e.Id);
-        var periodEnd = From(to.AddDays(1));
 
         var lines = new List<PayReportLine>();
         var notCounted = new List<UncountedShift>();
@@ -106,25 +300,21 @@ public sealed class ReportService(IPunchClockStore store)
             var (count, minutes, elapsed, skipped) = (0, 0L, 0m, 0);
             foreach (var shift in group)
             {
-                var inLocal = shift.In.OccurredAtLocal.DateTime;
-                if (!InPeriod(inLocal, from, to))
+                switch (Classify(shift, from, to))
                 {
-                    continue;
+                    case { InPeriod: false }:
+                        continue;
+                    case { Minutes: { } paid }:
+                        count++;
+                        minutes += paid;
+                        elapsed += (decimal)(shift.Out!.OccurredAtUtc - shift.In.OccurredAtUtc).TotalMinutes;
+                        break;
+                    case { NotCountedReason: { } reason }:
+                        skipped++;
+                        notCounted.Add(new UncountedShift(
+                            employee.Id, employee.DisplayName, shift.In.OccurredAtLocal.DateTime, shift.Out?.OccurredAtLocal.DateTime, reason));
+                        break;
                 }
-
-                var outLocal = shift.Out?.OccurredAtLocal.DateTime;
-                if (shift.Out is null || outLocal >= periodEnd)
-                {
-                    skipped++;
-                    notCounted.Add(new UncountedShift(employee.Id, employee.DisplayName, inLocal, outLocal, shift.Out is null
-                        ? "No punch-out: add it on the Corrections tab."
-                        : "Ends after the period, so the old report's rule does not count it in either period."));
-                    continue;
-                }
-
-                count++;
-                minutes += PayRules.AccessDateDiffMinutes(inLocal, outLocal!.Value);
-                elapsed += (decimal)(shift.Out.OccurredAtUtc - shift.In.OccurredAtUtc).TotalMinutes;
             }
 
             if (count > 0 || skipped > 0)
@@ -143,16 +333,44 @@ public sealed class ReportService(IPunchClockStore store)
             notCounted.OrderBy(s => s.InLocal).ToList());
     }
 
-    private async Task<ExportResult> ExportAsync(
+    /// <summary>
+    /// The pay rule for one shift. Not in the period when its IN is outside it. Otherwise paid
+    /// minutes when it also ends before the day after <paramref name="to"/>, or the reason it is not paid.
+    /// </summary>
+    private static (bool InPeriod, long? Minutes, string? NotCountedReason) Classify(ShiftRecord shift, DateOnly from, DateOnly to)
+    {
+        var inLocal = shift.In.OccurredAtLocal.DateTime;
+        if (!InPeriod(inLocal, from, to))
+        {
+            return (false, null, null);
+        }
+
+        if (shift.Out is null)
+        {
+            return (true, null, "No punch-out: add it on the Corrections tab.");
+        }
+
+        var outLocal = shift.Out.OccurredAtLocal.DateTime;
+        return outLocal >= From(to.AddDays(1))
+            ? (true, null, "Ends after the period, so the old report's rule does not count it in either period.")
+            : (true, PayRules.AccessDateDiffMinutes(inLocal, outLocal), null);
+    }
+
+    private Task<ExportResult> ExportAsync(
         AppUser by, string kind, DateOnly from, DateOnly to, string path,
+        Func<IPunchClockUnitOfWork, Task<(byte[] Bytes, int Rows)>> build, CancellationToken ct) =>
+        ExportAsync(by, kind, ".csv", from, to, path, build, ct);
+
+    private async Task<ExportResult> ExportAsync(
+        AppUser by, string kind, string extension, DateOnly from, DateOnly to, string path,
         Func<IPunchClockUnitOfWork, Task<(byte[] Bytes, int Rows)>> build, CancellationToken ct)
     {
         EnsureAllowed(by, from, to);
         path = Path.GetFullPath(path);
-        if (!string.Equals(Path.GetExtension(path), ".csv", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(Path.GetExtension(path), extension, StringComparison.OrdinalIgnoreCase))
         {
             // Never replace a database, backup or any other file the export was not meant for.
-            throw new ArgumentException("Exports are saved as .csv files.", nameof(path));
+            throw new ArgumentException($"This export is saved as a {extension} file.", nameof(path));
         }
 
         byte[] bytes;

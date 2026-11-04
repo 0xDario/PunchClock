@@ -84,6 +84,18 @@ public interface IPunchClockUnitOfWork : IAsyncDisposable
     /// <summary>Corrections made in [<paramref name="fromUtc"/>, <paramref name="toUtc"/>).</summary>
     Task<IReadOnlyList<Reports.CorrectionExportRow>> ListCorrectionsForExportAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default);
 
+    /// <summary>
+    /// Corrections that made or replaced a punch with time in [<paramref name="fromUtc"/>, <paramref name="toUtc"/>),
+    /// plus every earlier and later correction in those punches' histories, oldest first.
+    /// </summary>
+    Task<IReadOnlyList<Reports.CorrectionHistoryRow>> ListCorrectionHistoryAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default);
+
+    /// <summary>Effective OUT punches in [<paramref name="fromUtc"/>, <paramref name="toUtc"/>) with no IN before them (<c>punch_exception_v</c> missing_in).</summary>
+    Task<IReadOnlyList<long>> ListPunchesMissingInAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, CancellationToken ct = default);
+
+    /// <summary>The newest audit row's sequence number and hash; (0, "") on an empty log.</summary>
+    Task<(long Seq, string Hash)> GetAuditHeadAsync(CancellationToken ct = default);
+
     Task<AppUser?> FindUserAsync(long userId, CancellationToken ct = default);
 
     Task<AppUser?> FindUserByUsernameAsync(string username, CancellationToken ct = default);
