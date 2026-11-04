@@ -2,6 +2,19 @@
 
 Each GitHub release takes its notes from its section below. Before tagging a release, add a `## vX.Y.Z - YYYY-MM-DD` section for it, using the same headings (Features Added, Bugs Fixed). The release build stops if the section is missing. v1.x is the legacy WinForms app; its notes are on the [Releases](https://github.com/0xDario/PunchClock/releases) page.
 
+## v2.1.0 - 2026-11-04
+
+The old hours report is back: every shift on paper, with each employee's total, so times can be checked line by line before pay is worked out. The database is the same as in 2.0.3, so 2.1.0 installs over it and keeps all data.
+
+Features Added:
+- Print hours worked (PDF) on the Reports tab. It lists every shift in the pay period the way the old report did: Time Punched In, Time Punched Out and Total Hours Worked for each shift, and each employee's Sum of Total Hours. It opens in the PDF viewer, ready to print or save
+- The weekday beside each shift, and a summary page with every employee's shifts and hours and the total for everyone
+- A star on every time a manager added or changed, with a note under the shift saying who changed it, when, and why, and what the time was before
+- Shifts that are not paid in the period (no punch-out yet, or ending after the period), voided punches and punch-outs with no punch-in are listed with the reason, instead of being left out
+- Totals are exactly the pay report's, so the printout and the CSV for payroll always agree
+- The footer says how to fix a wrong time: correct it on the Corrections tab and print again, so every change is kept in the audit log. It also names the audit log entry the report was printed at, so a printout kept on file can show later whether the history was altered
+- Each printout is recorded in the audit log like the CSV exports: who printed it, the period, and the file's fingerprint
+
 ## v2.0.3 - 2026-10-21
 
 A new app icon, and a way back into PunchClock when the only admin forgets their password. The database and the switchover tools are the same as in 2.0.2, so 2.0.3 installs over 2.0.2, keeps all data and is equally safe for the switchover.
