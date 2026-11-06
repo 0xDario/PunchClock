@@ -20,6 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\PunchClock.Core\PunchClock.Core.csproj" />
     <ProjectReference Include="..\..\src\PunchClock.Data.Sqlite\PunchClock.Data.Sqlite.csproj" />
+    <ProjectReference Include="..\..\src\PunchClock.SeedShifts\PunchClock.SeedShifts.csproj" />
   </ItemGroup>
 
 </Project>

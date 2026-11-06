@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Developer tool for test databases; the installer does not include it. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>PunchClock.SeedShifts</RootNamespace>
+    <AssemblyName>PunchClock.SeedShifts</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PunchClock.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PunchClock.Core\PunchClock.Core.csproj" />
+    <ProjectReference Include="..\PunchClock.Data.Sqlite\PunchClock.Data.Sqlite.csproj" />
+  </ItemGroup>
+
+</Project>
